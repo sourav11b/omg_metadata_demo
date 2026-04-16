@@ -83,12 +83,17 @@ def _log(state: AgentState, step: str, detail: Any = None) -> None:
 
 # ── Node: Classify Intent ─────────────────────────────────────────────────────
 
-INTENT_SYSTEM = """You are a metadata search router. Given the user's question,
+INTENT_SYSTEM = f"""You are a metadata search router. Given the user's question,
 decide the best retrieval strategy. Respond with EXACTLY one word:
   hybrid     – general semantic + keyword question
   self_query – question that filters on specific metadata fields (domain, classification, PII, etc.)
   fulltext   – simple keyword lookup
   mql        – user wants raw data or a structured MongoDB query
+
+IMPORTANT: All queries should target the '{COL_UNIFIED_METADATA}' collection by default.
+This is the consolidated semantic layer containing all metadata. Only use source
+collections (source_logical_models, source_physical_schemas, source_governance_tags)
+if the user EXPLICITLY asks to look at raw/source data.
 """
 
 
@@ -177,11 +182,20 @@ def _run_mcp_query(query: str) -> list[dict]:
 Given the user question, generate a JSON object with:
   - "tool": one of "find" or "aggregate"
   - "database": "{MONGODB_DATABASE}"
-  - "collection": "{COL_UNIFIED_METADATA}"
+  - "collection": the target collection name
   - "filter": a MongoDB filter document (for find) OR
   - "pipeline": a MongoDB aggregation pipeline (for aggregate)
   - "projection": optional projection (for find)
   - "limit": max docs to return (default 10)
+
+IMPORTANT: Always use collection '{COL_UNIFIED_METADATA}' by default. This is the
+consolidated semantic layer with all metadata (logical model, physical schema,
+governance tags) merged into one document per entity.
+
+Only use these source collections if the user EXPLICITLY asks for raw/source data:
+  - 'source_logical_models' — raw logical model definitions
+  - 'source_physical_schemas' — raw physical DB schema info
+  - 'source_governance_tags' — raw governance/classification tags
 
 Return ONLY valid JSON, no explanation.
 
@@ -258,8 +272,22 @@ def mcp_query(state: AgentState) -> AgentState:
 
 MQL_SYSTEM = f"""You are a MongoDB query expert. Given a natural language question
 about the metadata fabric, generate a valid MongoDB aggregation pipeline (as JSON)
-against the collection '{COL_UNIFIED_METADATA}' in database '{MONGODB_DATABASE}'.
-Return ONLY the JSON array of pipeline stages, no explanation."""
+against the database '{MONGODB_DATABASE}'.
+
+IMPORTANT: Always query the collection '{COL_UNIFIED_METADATA}' by default. This is
+the consolidated semantic layer containing all metadata (logical attributes, physical
+schema, governance tags, PII/SID classifications) merged per entity.
+
+Only query these source collections if the user EXPLICITLY asks for raw/source data:
+  - 'source_logical_models'
+  - 'source_physical_schemas'
+  - 'source_governance_tags'
+
+Return a JSON object with:
+  - "collection": the collection name to query (default: '{COL_UNIFIED_METADATA}')
+  - "pipeline": the aggregation pipeline array
+
+Return ONLY valid JSON, no explanation."""
 
 
 def text_to_mql(state: AgentState) -> AgentState:
@@ -286,8 +314,15 @@ def text_to_mql(state: AgentState) -> AgentState:
     _log(state, "text_to_mql", {"mql": mql_text})
 
     try:
-        pipeline = json.loads(mql_text)
-        col = get_collection(COL_UNIFIED_METADATA)
+        parsed = json.loads(mql_text)
+        # Support both formats: raw pipeline array or {collection, pipeline} object
+        if isinstance(parsed, list):
+            pipeline = parsed
+            target_col = COL_UNIFIED_METADATA
+        else:
+            pipeline = parsed.get("pipeline", parsed)
+            target_col = parsed.get("collection", COL_UNIFIED_METADATA)
+        col = get_collection(target_col)
         results = list(col.aggregate(pipeline))
         for doc in results:
             if "_id" in doc:
@@ -305,8 +340,13 @@ def text_to_mql(state: AgentState) -> AgentState:
 
 # ── Node: Generate Answer ────────────────────────────────────────────────────
 
-ANSWER_SYSTEM = """You are the Atlas Metadata Fabric Agent (AMF-Agent).
+ANSWER_SYSTEM = f"""You are the Atlas Metadata Fabric Agent (AMF-Agent).
 You answer questions about enterprise metadata using the retrieved context below.
+
+The data comes from the '{COL_UNIFIED_METADATA}' collection — the consolidated
+Semantic Layer that merges logical models, physical schemas, and governance tags
+into a single document per entity.
+
 ALWAYS include governance information (PII tags, SIDs, classification, PTB status,
 regulatory frameworks) when present — this is the Permit To Build (PTB) gateway.
 Be concise but thorough. If the context is insufficient, say so."""
