@@ -249,14 +249,20 @@ with st.sidebar:
     st.subheader("🔄 Consolidation")
     from ingestion.change_stream_worker import (
         start_background_consolidation,
+        stop_background_consolidation,
         is_background_running,
         get_consolidation_stats,
     )
 
-    if is_background_running():
+    running = is_background_running()
+    if running:
         st.success("🟢 Background consolidation running")
+        if st.button("⏹️ Stop Consolidation", use_container_width=True, type="secondary"):
+            stop_background_consolidation()
+            st.rerun()
     else:
-        if st.button("▶️ Start Background Consolidation", use_container_width=True):
+        st.info("⚪ Background consolidation stopped")
+        if st.button("▶️ Start Consolidation", use_container_width=True, type="primary"):
             start_background_consolidation()
             st.rerun()
 

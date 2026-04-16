@@ -187,13 +187,14 @@ def consolidate_all() -> dict:
 # ── Background continuous consolidation ──────────────────────────────────────
 
 _bg_thread: threading.Thread | None = None
+_bg_stop_event = threading.Event()
 
 
 def _background_consolidation_loop() -> None:
     """Continuously consolidate pending entities every 5 seconds."""
     with _stats_lock:
         _consolidation_stats["running"] = True
-    while True:
+    while not _bg_stop_event.is_set():
         try:
             source_ids: set[str] = set()
             for cn in (COL_LOGICAL_MODELS, COL_PHYSICAL_SCHEMAS, COL_GOVERNANCE_TAGS):
@@ -217,7 +218,11 @@ def _background_consolidation_loop() -> None:
         except Exception as exc:
             print(f"[bg-consolidate] Loop error: {exc}")
 
-        time.sleep(5)
+        _bg_stop_event.wait(timeout=5)
+
+    with _stats_lock:
+        _consolidation_stats["running"] = False
+    print("[bg-consolidate] Background consolidation stopped")
 
 
 def start_background_consolidation() -> None:
@@ -225,6 +230,7 @@ def start_background_consolidation() -> None:
     global _bg_thread
     if _bg_thread is not None and _bg_thread.is_alive():
         return  # already running
+    _bg_stop_event.clear()
     _bg_thread = threading.Thread(
         target=_background_consolidation_loop, daemon=True, name="bg-consolidate",
     )
@@ -232,8 +238,16 @@ def start_background_consolidation() -> None:
     print("[bg-consolidate] Background consolidation started")
 
 
+def stop_background_consolidation() -> None:
+    """Signal the background consolidation thread to stop."""
+    _bg_stop_event.set()
+    with _stats_lock:
+        _consolidation_stats["running"] = False
+    print("[bg-consolidate] Stop signal sent")
+
+
 def is_background_running() -> bool:
-    return _bg_thread is not None and _bg_thread.is_alive()
+    return _bg_thread is not None and _bg_thread.is_alive() and not _bg_stop_event.is_set()
 
 
 # ── Change Stream workers (for Atlas M10+) ───────────────────────────────────
