@@ -38,7 +38,7 @@ from utils.mongo_client import get_collection, get_database
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AMF-Agent · Metadata Fabric",
+    page_title="AMF-Agent Demo · Real-Time Semantic Layer for Agentic Commerce",
     page_icon="🧠",
     layout="wide",
 )
@@ -175,11 +175,39 @@ def _render_trace(trace_data: dict) -> None:
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.title("🧠 Atlas Metadata Fabric Agent")
-st.caption(
-    "Semantic Layer for Agentic Commerce — powered by MongoDB Atlas, "
-    "Voyage AI embeddings, Azure OpenAI, and LangGraph"
-)
+st.title("🧠 Atlas Metadata Fabric Agent (AMF-Agent) Demo")
+st.subheader("Real-Time Semantic Layer for Agentic Commerce")
+
+with st.expander("ℹ️ About this Demo", expanded=False):
+    st.markdown("""
+**This demonstration showcases the Atlas Metadata Fabric Agent (AMF-Agent)** and its
+ability to construct a real-time, unified Semantic Layer. Data from heterogeneous
+sources (models, schema, tags) is ingested into MongoDB and consolidated via Change
+Streams and Atlas Stream Processing into comprehensive metadata documents. Atlas
+Vector Search is used to generate and store embeddings, enabling Retrieval-Augmented
+Generation (RAG) and hybrid search for an Agentic Commerce foundation.
+
+The demo features a **low-latency chat interface** where a business user can ask
+natural language questions. Hybrid search, combining keyword and semantic search,
+retrieves relevant metadata, explicitly displaying governance tags (e.g., PII, SIDs)
+to establish the Semantic Layer as the **"Permit to Build" (PTB) gateway** for AI
+agents. The application utilizes LangChain/LangGraph, Azure OpenAI, and Voyage AI,
+with full tracing via LangSmith, positioning Atlas as the **"operational nervous
+system"** for AI.
+
+---
+
+**OMG (One Meta Guard):** Amex's system for standardization, tagging, and governance
+of metadata (e.g., PII, SIDs). It is the Permit to Build (PTB) gateway for new
+business requirements, ensuring tagging happens correctly and guardrails are applied
+before production. OMG is already in production and will consume the Semantic Layer.
+The backend of OMG is planned to go to MongoDB.
+
+**AMF-Agent (Atlas Metadata Fabric Agent):** A demonstration application built by
+MongoDB. The AMF-Agent Demo showcases how Atlas can construct a real-time, unified
+Semantic Layer. This Semantic Layer, created by the AMF-Agent, is critical for OMG
+and all Gen AI applications.
+    """)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:

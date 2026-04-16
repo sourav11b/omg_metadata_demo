@@ -14,6 +14,7 @@ Integrates:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, TypedDict
@@ -62,12 +63,14 @@ class AgentState(TypedDict, total=False):
     trace: list[dict]                      # full execution trace
     tool_calls: list[dict]
     latency_ms: float
+    mcp_success: bool                      # whether MCP query succeeded
 
 
 def _make_initial_state(query: str) -> AgentState:
     return AgentState(
         query=query, intent="", retrieved_docs=[],
         answer="", trace=[], tool_calls=[], latency_ms=0.0,
+        mcp_success=False,
     )
 
 
@@ -154,7 +157,101 @@ def retrieve(state: AgentState) -> AgentState:
     return state
 
 
-# ── Node: Text-to-MQL ────────────────────────────────────────────────────────
+# ── Node: MCP Query (MongoDB MCP Server — primary NLQ path) ──────────────────
+
+def _run_mcp_query(query: str) -> list[dict]:
+    """Run a natural language query via the MongoDB MCP Server (stdio).
+
+    Spawns npx mongodb-mcp-server as a subprocess, sends the query
+    as a tool call, and returns the results.
+    """
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    async def _do():
+        async with MultiServerMCPClient({
+            "mongodb": {
+                "transport": "stdio",
+                "command": "npx",
+                "args": [
+                    "-y", "mongodb-mcp-server@latest",
+                    "--connectionString", MONGODB_URI,
+                    "--readOnly",
+                ],
+            }
+        }) as client:
+            tools = client.get_tools()
+            # Find a query / find tool
+            query_tool = None
+            for t in tools:
+                if "find" in t.name.lower() or "query" in t.name.lower():
+                    query_tool = t
+                    break
+            if not query_tool:
+                # Use the LLM to pick the right tool and args
+                llm = get_llm()
+                from langgraph.prebuilt import create_react_agent
+                agent = create_react_agent(llm, tools)
+                result = await agent.ainvoke(
+                    {"messages": [HumanMessage(content=(
+                        f"Query the MongoDB database '{MONGODB_DATABASE}', "
+                        f"collection '{COL_UNIFIED_METADATA}' to answer: {query}"
+                    ))]}
+                )
+                # Extract content from last AI message
+                last_msg = result["messages"][-1]
+                content = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+                try:
+                    return json.loads(content) if content.strip().startswith("[") else [{"mcp_response": content}]
+                except (json.JSONDecodeError, TypeError):
+                    return [{"mcp_response": content}]
+            else:
+                # Directly invoke the find tool
+                result = await query_tool.ainvoke({
+                    "database": MONGODB_DATABASE,
+                    "collection": COL_UNIFIED_METADATA,
+                    "filter": {},
+                })
+                if isinstance(result, str):
+                    try:
+                        return json.loads(result)
+                    except (json.JSONDecodeError, TypeError):
+                        return [{"mcp_response": result}]
+                return result if isinstance(result, list) else [result]
+
+    return asyncio.run(_do())
+
+
+def mcp_query(state: AgentState) -> AgentState:
+    """Primary NLQ path: try MongoDB MCP Server first."""
+    t0 = time.time()
+    query = state["query"]
+    try:
+        results = _run_mcp_query(query)
+        # Sanitise ObjectIds
+        for doc in results:
+            if isinstance(doc, dict) and "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+        state["retrieved_docs"] = results
+        state["mcp_success"] = True
+        latency = round((time.time() - t0) * 1000, 1)
+        _log(state, "mcp_query", {"doc_count": len(results), "latency_ms": latency})
+        state.setdefault("tool_calls", []).append({
+            "tool": "mcp_query (MongoDB MCP Server)",
+            "result": f"{len(results)} docs retrieved via MCP",
+            "latency_ms": latency,
+        })
+    except Exception as exc:
+        state["mcp_success"] = False
+        _log(state, "mcp_query_fallback", {"error": str(exc)})
+        state.setdefault("tool_calls", []).append({
+            "tool": "mcp_query (MongoDB MCP Server)",
+            "error": f"MCP failed, falling back: {exc}",
+            "latency_ms": round((time.time() - t0) * 1000, 1),
+        })
+    return state
+
+
+# ── Node: Text-to-MQL (fallback for MQL intent) ─────────────────────────────
 
 MQL_SYSTEM = f"""You are a MongoDB query expert. Given a natural language question
 about the metadata fabric, generate a valid MongoDB aggregation pipeline (as JSON)
@@ -233,11 +330,15 @@ def generate(state: AgentState) -> AgentState:
     return state
 
 
-# ── Router Edge ───────────────────────────────────────────────────────────────
+# ── Router Edges ──────────────────────────────────────────────────────────────
 
-def route_after_classify(state: AgentState) -> str:
-    """Route to the correct retrieval node based on classified intent."""
-    if state.get("intent") == "mql":
+def route_after_mcp(state: AgentState) -> str:
+    """After MCP: if it succeeded, go straight to generate; otherwise fallback."""
+    if state.get("mcp_success"):
+        return "generate"
+    # MCP failed — fall back based on intent
+    intent = state.get("intent", "hybrid")
+    if intent == "mql":
         return "text_to_mql"
     return "retrieve"
 
@@ -245,19 +346,29 @@ def route_after_classify(state: AgentState) -> str:
 # ── Build the Graph ───────────────────────────────────────────────────────────
 
 def build_graph() -> StateGraph:
-    """Build and compile the LangGraph state machine."""
+    """Build and compile the LangGraph state machine.
+
+    Flow:
+      classify_intent → mcp_query (always try MCP first)
+        ├─ success → generate
+        └─ fail   → retrieve / text_to_mql (based on intent) → generate
+    """
     graph = StateGraph(AgentState)
 
     # Nodes
     graph.add_node("classify_intent", classify_intent)
+    graph.add_node("mcp_query", mcp_query)
     graph.add_node("retrieve", retrieve)
     graph.add_node("text_to_mql", text_to_mql)
     graph.add_node("generate", generate)
 
     # Edges
     graph.add_edge(START, "classify_intent")
-    graph.add_conditional_edges("classify_intent", route_after_classify,
-                                {"retrieve": "retrieve", "text_to_mql": "text_to_mql"})
+    graph.add_edge("classify_intent", "mcp_query")  # always try MCP first
+    graph.add_conditional_edges("mcp_query", route_after_mcp,
+                                {"generate": "generate",
+                                 "retrieve": "retrieve",
+                                 "text_to_mql": "text_to_mql"})
     graph.add_edge("retrieve", "generate")
     graph.add_edge("text_to_mql", "generate")
     graph.add_edge("generate", END)
