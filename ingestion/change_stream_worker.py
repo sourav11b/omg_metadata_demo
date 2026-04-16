@@ -110,20 +110,135 @@ def consolidate_entity(entity_id: str) -> None:
     print(f"[consolidate] {entity_id} → unified_metadata  ✓")
 
 
-def consolidate_all() -> None:
-    """One-shot consolidation of every entity currently in the source collections."""
-    entity_ids: set[str] = set()
-    for col_name in (COL_LOGICAL_MODELS, COL_PHYSICAL_SCHEMAS, COL_GOVERNANCE_TAGS):
-        for doc in get_collection(col_name).find({}, {"entity_id": 1}):
-            entity_ids.add(doc["entity_id"])
-    print(f"[consolidate_all] Found {len(entity_ids)} entities to consolidate …")
-    for eid in sorted(entity_ids):
-        consolidate_entity(eid)
-    print("[consolidate_all] Done.")
+# ── Consolidation stats (shared across threads / UI reads) ────────────────────
 
+_stats_lock = threading.Lock()
+_consolidation_stats = {
+    "total_consolidated": 0,
+    "pending": 0,
+    "last_consolidated_at": None,
+    "running": False,
+    "errors": 0,
+}
+
+
+def get_consolidation_stats() -> dict:
+    with _stats_lock:
+        # Recompute pending
+        source_ids: set[str] = set()
+        for cn in (COL_LOGICAL_MODELS, COL_PHYSICAL_SCHEMAS, COL_GOVERNANCE_TAGS):
+            for d in get_collection(cn).find({}, {"entity_id": 1}):
+                source_ids.add(d["entity_id"])
+        unified_ids: set[str] = set()
+        for d in get_collection(COL_UNIFIED_METADATA).find({}, {"entity_id": 1}):
+            unified_ids.add(d["entity_id"])
+        _consolidation_stats["pending"] = len(source_ids - unified_ids)
+        _consolidation_stats["total_consolidated"] = len(unified_ids)
+        return dict(_consolidation_stats)
+
+
+def _increment_stat(key: str, delta: int = 1) -> None:
+    with _stats_lock:
+        _consolidation_stats[key] = _consolidation_stats.get(key, 0) + delta
+        _consolidation_stats["last_consolidated_at"] = (
+            datetime.datetime.now(datetime.timezone.utc).isoformat()
+        )
+
+
+def consolidate_all() -> dict:
+    """One-shot: consolidate every entity not yet in unified_metadata."""
+    source_ids: set[str] = set()
+    for cn in (COL_LOGICAL_MODELS, COL_PHYSICAL_SCHEMAS, COL_GOVERNANCE_TAGS):
+        for d in get_collection(cn).find({}, {"entity_id": 1}):
+            source_ids.add(d["entity_id"])
+
+    unified_ids: set[str] = set()
+    for d in get_collection(COL_UNIFIED_METADATA).find({}, {"entity_id": 1}):
+        unified_ids.add(d["entity_id"])
+
+    pending = source_ids - unified_ids
+    # Also re-consolidate a sample of existing ones (updates)
+    existing_sample = set()
+    if unified_ids:
+        import random
+        existing_sample = set(random.sample(
+            list(unified_ids), k=min(50, len(unified_ids))
+        ))
+
+    to_process = pending | existing_sample
+    print(f"[consolidate_all] {len(pending)} new + {len(existing_sample)} updates = {len(to_process)} to process")
+
+    done, errors = 0, 0
+    for eid in to_process:
+        try:
+            consolidate_entity(eid)
+            done += 1
+            _increment_stat("total_consolidated", 0)  # updates timestamp
+        except Exception as exc:
+            errors += 1
+            print(f"[consolidate] Error on {eid}: {exc}")
+
+    with _stats_lock:
+        _consolidation_stats["errors"] += errors
+
+    return {"processed": done, "errors": errors, "pending_new": len(pending)}
+
+
+# ── Background continuous consolidation ──────────────────────────────────────
+
+_bg_thread: threading.Thread | None = None
+
+
+def _background_consolidation_loop() -> None:
+    """Continuously consolidate pending entities every 5 seconds."""
+    with _stats_lock:
+        _consolidation_stats["running"] = True
+    while True:
+        try:
+            source_ids: set[str] = set()
+            for cn in (COL_LOGICAL_MODELS, COL_PHYSICAL_SCHEMAS, COL_GOVERNANCE_TAGS):
+                for d in get_collection(cn).find({}, {"entity_id": 1}):
+                    source_ids.add(d["entity_id"])
+
+            unified_ids: set[str] = set()
+            for d in get_collection(COL_UNIFIED_METADATA).find({}, {"entity_id": 1}):
+                unified_ids.add(d["entity_id"])
+
+            pending = source_ids - unified_ids
+            if pending:
+                print(f"[bg-consolidate] Processing {len(pending)} pending entities …")
+                for eid in pending:
+                    try:
+                        consolidate_entity(eid)
+                        _increment_stat("total_consolidated", 0)
+                    except Exception as exc:
+                        _increment_stat("errors")
+                        print(f"[bg-consolidate] Error on {eid}: {exc}")
+        except Exception as exc:
+            print(f"[bg-consolidate] Loop error: {exc}")
+
+        time.sleep(5)
+
+
+def start_background_consolidation() -> None:
+    """Start background consolidation thread (if not already running)."""
+    global _bg_thread
+    if _bg_thread is not None and _bg_thread.is_alive():
+        return  # already running
+    _bg_thread = threading.Thread(
+        target=_background_consolidation_loop, daemon=True, name="bg-consolidate",
+    )
+    _bg_thread.start()
+    print("[bg-consolidate] Background consolidation started")
+
+
+def is_background_running() -> bool:
+    return _bg_thread is not None and _bg_thread.is_alive()
+
+
+# ── Change Stream workers (for Atlas M10+) ───────────────────────────────────
 
 def _watch_collection(col_name: str) -> None:
-    """Watch a single collection's change stream and trigger consolidation."""
     col = get_collection(col_name)
     pipeline = [{"$match": {"operationType": {"$in": ["insert", "replace", "update"]}}}]
     print(f"[watch] Listening on {col_name} …")
@@ -132,14 +247,13 @@ def _watch_collection(col_name: str) -> None:
             for change in stream:
                 entity_id = change.get("fullDocument", {}).get("entity_id")
                 if entity_id:
-                    print(f"[watch] Change detected in {col_name} for {entity_id}")
                     consolidate_entity(entity_id)
+                    _increment_stat("total_consolidated", 0)
     except Exception as exc:
         print(f"[watch] Error on {col_name}: {exc}")
 
 
 def run_change_stream_workers() -> None:
-    """Spawn a thread per source collection to watch for changes."""
     print("=" * 60)
     print("AMF-Agent  ·  Change Stream Consolidation Workers")
     print("=" * 60)
@@ -158,8 +272,11 @@ def run_change_stream_workers() -> None:
 
 if __name__ == "__main__":
     import sys
-
     if "--once" in sys.argv:
         consolidate_all()
+    elif "--bg" in sys.argv:
+        start_background_consolidation()
+        while True:
+            time.sleep(5)
     else:
         run_change_stream_workers()

@@ -1,250 +1,149 @@
 """
-Heterogeneous metadata seed data simulating three disparate source systems:
-  1. Logical Data Models  (business-level entity definitions)
-  2. Physical Schemas      (database/table/column details)
-  3. Governance Tags       (PII, SIDs, classification, lineage)
+Programmatic seed-data generator for three heterogeneous source systems.
+
+Each call to generate_batch() produces *new* documents with unique entity_ids
+so collection counts grow on every ingestion run.
 """
 
-LOGICAL_MODELS = [
-    {
-        "entity_id": "ENT-CUST-001",
-        "entity_name": "Customer",
-        "domain": "Customer Management",
-        "description": "Core customer entity representing an individual or business account holder.",
-        "attributes": [
-            {"name": "customer_id", "type": "string", "description": "Unique customer identifier"},
-            {"name": "full_name", "type": "string", "description": "Customer full legal name"},
-            {"name": "email", "type": "string", "description": "Primary email address"},
-            {"name": "phone", "type": "string", "description": "Primary phone number"},
-            {"name": "date_of_birth", "type": "date", "description": "Customer date of birth"},
-            {"name": "loyalty_tier", "type": "string", "description": "Membership Rewards tier level"},
-        ],
-        "relationships": ["Account", "Transaction", "Offer"],
-        "source_system": "enterprise_logical_model",
-    },
-    {
-        "entity_id": "ENT-ACCT-002",
-        "entity_name": "Account",
-        "domain": "Account Management",
-        "description": "Financial account linked to a customer – credit, charge, or prepaid.",
-        "attributes": [
-            {"name": "account_id", "type": "string", "description": "Unique account number"},
-            {"name": "account_type", "type": "string", "description": "Credit / Charge / Prepaid"},
-            {"name": "credit_limit", "type": "number", "description": "Approved credit limit"},
-            {"name": "open_date", "type": "date", "description": "Account opening date"},
-            {"name": "status", "type": "string", "description": "Active / Suspended / Closed"},
-        ],
-        "relationships": ["Customer", "Transaction"],
-        "source_system": "enterprise_logical_model",
-    },
-    {
-        "entity_id": "ENT-TXN-003",
-        "entity_name": "Transaction",
-        "domain": "Payments",
-        "description": "Individual payment or purchase transaction on an account.",
-        "attributes": [
-            {"name": "transaction_id", "type": "string", "description": "Unique transaction identifier"},
-            {"name": "amount", "type": "number", "description": "Transaction amount in USD"},
-            {"name": "merchant_name", "type": "string", "description": "Merchant or payee name"},
-            {"name": "category", "type": "string", "description": "Merchant category code description"},
-            {"name": "timestamp", "type": "datetime", "description": "Transaction date and time"},
-            {"name": "channel", "type": "string", "description": "POS / Online / Mobile / Contactless"},
-        ],
-        "relationships": ["Account", "Merchant", "Offer"],
-        "source_system": "enterprise_logical_model",
-    },
-    {
-        "entity_id": "ENT-OFFER-004",
-        "entity_name": "Offer",
-        "domain": "Marketing",
-        "description": "Targeted promotional offer delivered to a customer.",
-        "attributes": [
-            {"name": "offer_id", "type": "string", "description": "Unique offer identifier"},
-            {"name": "title", "type": "string", "description": "Offer headline"},
-            {"name": "discount_pct", "type": "number", "description": "Percentage discount"},
-            {"name": "valid_from", "type": "date", "description": "Start date"},
-            {"name": "valid_to", "type": "date", "description": "Expiry date"},
-            {"name": "eligible_tiers", "type": "array", "description": "Eligible loyalty tiers"},
-        ],
-        "relationships": ["Customer", "Merchant"],
-        "source_system": "enterprise_logical_model",
-    },
-    {
-        "entity_id": "ENT-MERCH-005",
-        "entity_name": "Merchant",
-        "domain": "Merchant Network",
-        "description": "Merchant in the acceptance network.",
-        "attributes": [
-            {"name": "merchant_id", "type": "string", "description": "Unique merchant identifier"},
-            {"name": "merchant_name", "type": "string", "description": "Business name"},
-            {"name": "mcc", "type": "string", "description": "Merchant Category Code"},
-            {"name": "country", "type": "string", "description": "Country of registration"},
-        ],
-        "relationships": ["Transaction", "Offer"],
-        "source_system": "enterprise_logical_model",
-    },
-]
+import random
+import uuid
 
-# ── Source 2: Physical Database Schemas ────────────────────────────────────────
-PHYSICAL_SCHEMAS = [
-    {
-        "entity_id": "ENT-CUST-001",
-        "schema_name": "card_platform",
-        "table_name": "dm_customer",
-        "database": "CARD_DW",
-        "columns": [
-            {"name": "cust_id", "data_type": "VARCHAR(36)", "nullable": False, "primary_key": True},
-            {"name": "full_nm", "data_type": "VARCHAR(200)", "nullable": False},
-            {"name": "email_addr", "data_type": "VARCHAR(320)", "nullable": True},
-            {"name": "phone_nbr", "data_type": "VARCHAR(15)", "nullable": True},
-            {"name": "dob", "data_type": "DATE", "nullable": True},
-            {"name": "loyalty_tier_cd", "data_type": "VARCHAR(20)", "nullable": True},
-        ],
-        "storage_format": "Parquet",
-        "partition_key": "loyalty_tier_cd",
-        "row_count_approx": 84_000_000,
-        "source_system": "physical_schema_catalog",
-    },
-    {
-        "entity_id": "ENT-ACCT-002",
-        "schema_name": "card_platform",
-        "table_name": "dm_account",
-        "database": "CARD_DW",
-        "columns": [
-            {"name": "acct_id", "data_type": "VARCHAR(36)", "nullable": False, "primary_key": True},
-            {"name": "acct_type_cd", "data_type": "VARCHAR(10)", "nullable": False},
-            {"name": "credit_limit_amt", "data_type": "DECIMAL(15,2)", "nullable": True},
-            {"name": "open_dt", "data_type": "DATE", "nullable": False},
-            {"name": "status_cd", "data_type": "VARCHAR(10)", "nullable": False},
-        ],
-        "storage_format": "Parquet",
-        "partition_key": "status_cd",
-        "row_count_approx": 120_000_000,
-        "source_system": "physical_schema_catalog",
-    },
-    {
-        "entity_id": "ENT-TXN-003",
-        "schema_name": "payments",
-        "table_name": "fact_transaction",
-        "database": "PAYMENTS_DW",
-        "columns": [
-            {"name": "txn_id", "data_type": "VARCHAR(36)", "nullable": False, "primary_key": True},
-            {"name": "amt", "data_type": "DECIMAL(15,2)", "nullable": False},
-            {"name": "merchant_nm", "data_type": "VARCHAR(200)", "nullable": True},
-            {"name": "mcc_desc", "data_type": "VARCHAR(100)", "nullable": True},
-            {"name": "txn_ts", "data_type": "TIMESTAMP", "nullable": False},
-            {"name": "channel_cd", "data_type": "VARCHAR(20)", "nullable": True},
-        ],
-        "storage_format": "Delta",
-        "partition_key": "txn_ts",
-        "row_count_approx": 2_500_000_000,
-        "source_system": "physical_schema_catalog",
-    },
-    {
-        "entity_id": "ENT-OFFER-004",
-        "schema_name": "marketing",
-        "table_name": "dim_offer",
-        "database": "MKTG_DW",
-        "columns": [
-            {"name": "offer_id", "data_type": "VARCHAR(36)", "nullable": False, "primary_key": True},
-            {"name": "title", "data_type": "VARCHAR(500)", "nullable": False},
-            {"name": "discount_pct", "data_type": "DECIMAL(5,2)", "nullable": True},
-            {"name": "valid_from_dt", "data_type": "DATE", "nullable": False},
-            {"name": "valid_to_dt", "data_type": "DATE", "nullable": False},
-            {"name": "eligible_tiers", "data_type": "ARRAY<VARCHAR>", "nullable": True},
-        ],
-        "storage_format": "Parquet",
-        "partition_key": "valid_from_dt",
-        "row_count_approx": 500_000,
-        "source_system": "physical_schema_catalog",
-    },
-    {
-        "entity_id": "ENT-MERCH-005",
-        "schema_name": "payments",
-        "table_name": "dim_merchant",
-        "database": "PAYMENTS_DW",
-        "columns": [
-            {"name": "merchant_id", "data_type": "VARCHAR(36)", "nullable": False, "primary_key": True},
-            {"name": "merchant_nm", "data_type": "VARCHAR(200)", "nullable": False},
-            {"name": "mcc_cd", "data_type": "VARCHAR(10)", "nullable": False},
-            {"name": "country_cd", "data_type": "VARCHAR(3)", "nullable": True},
-        ],
-        "storage_format": "Parquet",
-        "partition_key": None,
-        "row_count_approx": 12_000_000,
-        "source_system": "physical_schema_catalog",
-    },
+DOMAINS = [
+    "Customer Management", "Account Management", "Payments",
+    "Marketing", "Merchant Network", "Risk & Fraud",
+    "Compliance", "Loyalty & Rewards", "Lending",
+    "Insurance", "Collections", "Servicing",
+    "Digital Channels", "Analytics", "Data Governance",
 ]
+ENTITY_PREFIXES = [
+    "Customer", "Account", "Transaction", "Offer", "Merchant",
+    "Card", "Payment", "Reward", "Claim", "Policy",
+    "Application", "Credit_Line", "Statement", "Dispute",
+    "Campaign", "Segment", "Score", "Alert", "Case",
+    "Fee", "Interest", "Balance", "Limit", "Threshold",
+    "Partner", "Vendor", "Channel", "Device", "Session",
+    "Event", "Notification", "Preference", "Address", "Contact",
+    "Beneficiary", "Mandate", "Standing_Order", "Direct_Debit",
+    "FX_Rate", "Currency", "Country", "Region", "Branch",
+]
+ATTR_NAMES = [
+    "id", "name", "type", "status", "code", "description", "amount",
+    "date", "timestamp", "flag", "count", "rate", "score", "tier",
+    "level", "category", "channel", "source", "target", "version",
+    "priority", "weight", "duration", "frequency", "limit",
+    "threshold", "min_value", "max_value", "avg_value", "total",
+    "email", "phone", "address", "city", "state", "zip", "country",
+]
+ATTR_TYPES = ["string", "number", "date", "datetime", "boolean", "array"]
+DB_NAMES = ["CARD_DW", "PAYMENTS_DW", "MKTG_DW", "RISK_DW", "LOYALTY_DW",
+            "LENDING_DW", "INSURANCE_DW", "DIGITAL_DW", "ANALYTICS_DW"]
+SCHEMA_NAMES = ["card_platform", "payments", "marketing", "risk_engine",
+                "loyalty", "lending", "insurance", "digital", "analytics"]
+STORAGE_FORMATS = ["Parquet", "Delta", "Iceberg", "Avro", "ORC"]
+SQL_TYPES = ["VARCHAR(36)", "VARCHAR(200)", "VARCHAR(100)", "INTEGER",
+             "BIGINT", "DECIMAL(15,2)", "DATE", "TIMESTAMP", "BOOLEAN"]
+TAG_TYPES = ["PII", "SID", "Financial", "Business", "Technical", "Derived"]
+SENSITIVITIES = ["High", "Medium", "Low"]
+CLASSIFICATIONS = ["Confidential", "Restricted", "Internal", "Public"]
+REGULATIONS = ["GDPR", "CCPA", "PCI-DSS", "SOX", "AML", "KYC", "GLBA",
+               "FCRA", "CAN-SPAM", "HIPAA", "DORA"]
+STEWARDS = [
+    "Jane Rivera", "Michael Chen", "Sarah Patel", "David Kim", "Lisa Wong",
+    "Robert Martinez", "Emily Johnson", "James Wilson", "Priya Sharma",
+    "Carlos Rodriguez", "Anna Kowalski", "Mohammed Al-Rashid",
+    "Sophie Dubois", "Thomas Anderson", "Yuki Tanaka",
+]
+PTB_STATUSES = ["Approved", "Pending", "Under Review", "Conditionally Approved"]
 
-# ── Source 3: Governance / Data Classification Tags ────────────────────────────
-GOVERNANCE_TAGS = [
-    {
-        "entity_id": "ENT-CUST-001",
-        "classification": "Confidential",
-        "data_steward": "Jane Rivera",
-        "retention_policy": "7 years",
-        "tags": [
-            {"field": "full_name", "tag": "PII", "sensitivity": "High"},
-            {"field": "email", "tag": "PII", "sensitivity": "High"},
-            {"field": "phone", "tag": "PII", "sensitivity": "High"},
-            {"field": "date_of_birth", "tag": "PII", "sensitivity": "High"},
-            {"field": "customer_id", "tag": "SID", "sensitivity": "Medium"},
-        ],
-        "regulatory_frameworks": ["GDPR", "CCPA", "PCI-DSS"],
-        "ptb_status": "Approved",
-        "source_system": "governance_catalog",
-    },
-    {
-        "entity_id": "ENT-ACCT-002",
-        "classification": "Confidential",
-        "data_steward": "Michael Chen",
-        "retention_policy": "10 years",
-        "tags": [
-            {"field": "account_id", "tag": "SID", "sensitivity": "Medium"},
-            {"field": "credit_limit", "tag": "Financial", "sensitivity": "High"},
-        ],
-        "regulatory_frameworks": ["SOX", "PCI-DSS"],
-        "ptb_status": "Approved",
-        "source_system": "governance_catalog",
-    },
-    {
-        "entity_id": "ENT-TXN-003",
-        "classification": "Restricted",
-        "data_steward": "Sarah Patel",
-        "retention_policy": "5 years",
-        "tags": [
-            {"field": "transaction_id", "tag": "SID", "sensitivity": "Medium"},
-            {"field": "amount", "tag": "Financial", "sensitivity": "High"},
-            {"field": "merchant_name", "tag": "Business", "sensitivity": "Low"},
-        ],
-        "regulatory_frameworks": ["PCI-DSS", "AML"],
-        "ptb_status": "Approved",
-        "source_system": "governance_catalog",
-    },
-    {
-        "entity_id": "ENT-OFFER-004",
-        "classification": "Internal",
-        "data_steward": "David Kim",
-        "retention_policy": "3 years",
-        "tags": [
-            {"field": "offer_id", "tag": "SID", "sensitivity": "Low"},
-            {"field": "eligible_tiers", "tag": "Business", "sensitivity": "Low"},
-        ],
-        "regulatory_frameworks": ["CAN-SPAM"],
-        "ptb_status": "Approved",
-        "source_system": "governance_catalog",
-    },
-    {
-        "entity_id": "ENT-MERCH-005",
-        "classification": "Internal",
-        "data_steward": "Lisa Wong",
-        "retention_policy": "5 years",
-        "tags": [
-            {"field": "merchant_id", "tag": "SID", "sensitivity": "Low"},
-            {"field": "mcc", "tag": "Business", "sensitivity": "Low"},
-        ],
-        "regulatory_frameworks": ["PCI-DSS"],
-        "ptb_status": "Approved",
-        "source_system": "governance_catalog",
-    },
-]
+
+def _new_id() -> str:
+    return f"ENT-{uuid.uuid4().hex[:8].upper()}"
+
+
+def _gen_logical_model(entity_id: str | None = None) -> dict:
+    eid = entity_id or _new_id()
+    prefix = random.choice(ENTITY_PREFIXES)
+    suffix = uuid.uuid4().hex[:4].upper()
+    n = random.randint(3, 10)
+    attrs, used = [], set()
+    for _ in range(n):
+        a = random.choice(ATTR_NAMES)
+        while a in used:
+            a = random.choice(ATTR_NAMES)
+        used.add(a)
+        attrs.append({"name": f"{prefix.lower()}_{a}",
+                      "type": random.choice(ATTR_TYPES),
+                      "description": f"{a.replace('_',' ').title()} for {prefix}"})
+    return {"entity_id": eid, "entity_name": f"{prefix}_{suffix}",
+            "domain": random.choice(DOMAINS),
+            "description": f"{prefix} entity for {random.choice(DOMAINS).lower()}.",
+            "attributes": attrs,
+            "relationships": random.sample(ENTITY_PREFIXES, k=random.randint(1, 4)),
+            "source_system": "enterprise_logical_model"}
+
+
+def _gen_physical_schema(entity_id: str) -> dict:
+    n = random.randint(3, 8)
+    cols = [{"name": f"col_{uuid.uuid4().hex[:6]}", "data_type": random.choice(SQL_TYPES),
+             "nullable": random.choice([True, False]),
+             "primary_key": i == 0} for i in range(n)]
+    return {"entity_id": entity_id,
+            "schema_name": random.choice(SCHEMA_NAMES),
+            "table_name": f"tbl_{uuid.uuid4().hex[:8]}",
+            "database": random.choice(DB_NAMES),
+            "columns": cols,
+            "storage_format": random.choice(STORAGE_FORMATS),
+            "partition_key": cols[0]["name"] if random.random() > 0.3 else None,
+            "row_count_approx": random.randint(1000, 5_000_000_000),
+            "source_system": "physical_schema_catalog"}
+
+
+def _gen_governance_tags(entity_id: str, attrs: list[dict]) -> dict:
+    tags = []
+    for a in attrs:
+        if random.random() > 0.4:
+            tags.append({"field": a["name"], "tag": random.choice(TAG_TYPES),
+                         "sensitivity": random.choice(SENSITIVITIES)})
+    if not tags:
+        tags.append({"field": attrs[0]["name"], "tag": "SID", "sensitivity": "Medium"})
+    return {"entity_id": entity_id,
+            "classification": random.choice(CLASSIFICATIONS),
+            "data_steward": random.choice(STEWARDS),
+            "retention_policy": f"{random.choice([3,5,7,10])} years",
+            "tags": tags,
+            "regulatory_frameworks": random.sample(REGULATIONS, k=random.randint(1, 4)),
+            "ptb_status": random.choice(PTB_STATUSES),
+            "source_system": "governance_catalog"}
+
+
+def generate_batch(count: int = 1000):
+    """Generate *count* new entities across all three source types.
+
+    Returns (logical_models, physical_schemas, governance_tags) — each a list
+    of dicts ready for MongoDB insertion.
+    """
+    lm_list, ps_list, gt_list = [], [], []
+    for _ in range(count):
+        lm = _gen_logical_model()
+        lm_list.append(lm)
+        ps_list.append(_gen_physical_schema(lm["entity_id"]))
+        gt_list.append(_gen_governance_tags(lm["entity_id"], lm["attributes"]))
+    return lm_list, ps_list, gt_list
+
+
+def generate_updates(existing_ids: list[str], count: int = 50):
+    """Generate updated docs for *count* randomly chosen existing entity_ids.
+
+    Simulates schema evolution, new tags, changed stewards, etc.
+    Returns (logical_models, physical_schemas, governance_tags).
+    """
+    if not existing_ids:
+        return [], [], []
+    ids = random.sample(existing_ids, k=min(count, len(existing_ids)))
+    lm_list, ps_list, gt_list = [], [], []
+    for eid in ids:
+        lm = _gen_logical_model(entity_id=eid)
+        lm_list.append(lm)
+        ps_list.append(_gen_physical_schema(eid))
+        gt_list.append(_gen_governance_tags(eid, lm["attributes"]))
+    return lm_list, ps_list, gt_list

@@ -224,37 +224,53 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Ingestion & Consolidation ──────────────────────────────────────────
+    # ── Ingestion ───────────────────────────────────────────────────────────
     st.subheader("📥 Data Ingestion")
-    if st.button("▶️ Ingest & Consolidate", use_container_width=True):
-        status_area = st.empty()
-        progress = st.progress(0)
-
-        # Step 1: Ingest source data
-        status_area.info("⏳ Ingesting logical models …")
-        from ingestion.ingest import (
-            ingest_logical_models, ingest_physical_schemas, ingest_governance_tags,
+    ingest_count = st.number_input(
+        "New entities per click", min_value=10, max_value=5000,
+        value=1000, step=100, key="ingest_count",
+    )
+    if st.button("▶️ Ingest New Data", use_container_width=True):
+        from ingestion.ingest import run_ingestion
+        with st.spinner(f"Ingesting {ingest_count} new + 50 updates …"):
+            stats = run_ingestion(new_count=int(ingest_count), update_count=50)
+        st.success(
+            f"✅ Inserted: {stats['new']['logical_models']} LM, "
+            f"{stats['new']['physical_schemas']} PS, "
+            f"{stats['new']['governance_tags']} GT  ·  "
+            f"Updated: {stats['updated']['logical_models']} LM, "
+            f"{stats['updated']['physical_schemas']} PS, "
+            f"{stats['updated']['governance_tags']} GT"
         )
-        lm = ingest_logical_models()
-        progress.progress(20)
 
-        status_area.info("⏳ Ingesting physical schemas …")
-        ps = ingest_physical_schemas()
-        progress.progress(40)
+    st.divider()
 
-        status_area.info("⏳ Ingesting governance tags …")
-        gt = ingest_governance_tags()
-        progress.progress(60)
+    # ── Consolidation (background) ─────────────────────────────────────────
+    st.subheader("🔄 Consolidation")
+    from ingestion.change_stream_worker import (
+        start_background_consolidation,
+        is_background_running,
+        get_consolidation_stats,
+    )
 
-        # Step 2: Consolidate
-        status_area.info("⏳ Consolidating into unified documents …")
-        from ingestion.change_stream_worker import consolidate_all
-        consolidate_all()
-        progress.progress(100)
+    if is_background_running():
+        st.success("🟢 Background consolidation running")
+    else:
+        if st.button("▶️ Start Background Consolidation", use_container_width=True):
+            start_background_consolidation()
+            st.rerun()
 
-        status_area.success(
-            f"✅ Done — Logical: {lm}, Physical: {ps}, Governance: {gt} docs ingested & consolidated"
-        )
+    # Show consolidation stats
+    c_stats = get_consolidation_stats()
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Consolidated", c_stats.get("total_consolidated", 0))
+    with c2:
+        st.metric("Pending", c_stats.get("pending", 0))
+    if c_stats.get("errors", 0) > 0:
+        st.warning(f"⚠️ {c_stats['errors']} consolidation errors")
+    if c_stats.get("last_consolidated_at"):
+        st.caption(f"Last: {c_stats['last_consolidated_at']}")
 
     st.divider()
 

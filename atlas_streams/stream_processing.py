@@ -155,7 +155,8 @@ def create_logical_model_processor(connection: str = "amf_cluster") -> dict:
 
 
 def create_physical_schema_processor(connection: str = "amf_cluster") -> dict:
-    """Processor: watches physical schemas → nests under 'physical' key."""
+    """Processor: watches physical schemas → nests under 'physical' key.
+    Works with dynamically generated entity_ids from seed_data generator."""
     pipeline = [
         _make_source_stage(COL_PHYSICAL_SCHEMAS, connection),
         {
