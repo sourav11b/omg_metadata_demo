@@ -1,0 +1,13 @@
+pymongo>=4.7,<5.0
+langchain>=0.3,<0.4
+langchain-mongodb>=0.5,<1.0
+langchain-openai>=0.3,<1.0
+langchain-voyageai>=0.3,<1.0
+langchain-mcp-adapters>=0.2,<1.0
+langgraph>=0.4,<1.0
+langsmith>=0.3,<1.0
+streamlit>=1.40,<2.0
+python-dotenv>=1.0,<2.0
+requests>=2.31,<3.0
+lark>=1.1,<2.0
+voyageai>=0.3,<1.0
