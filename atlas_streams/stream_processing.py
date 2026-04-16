@@ -51,18 +51,24 @@ def _url(path: str) -> str:
 
 def _post(path: str, body: dict) -> dict:
     resp = requests.post(_url(path), auth=_AUTH, headers=_HEADERS, json=body)
+    if not resp.ok:
+        print(f"[ASP] POST {path} → {resp.status_code}: {resp.text}")
     resp.raise_for_status()
     return resp.json()
 
 
 def _get(path: str) -> dict:
     resp = requests.get(_url(path), auth=_AUTH, headers=_HEADERS)
+    if not resp.ok:
+        print(f"[ASP] GET {path} → {resp.status_code}: {resp.text}")
     resp.raise_for_status()
     return resp.json()
 
 
 def _delete(path: str) -> int:
     resp = requests.delete(_url(path), auth=_AUTH, headers=_HEADERS)
+    if not resp.ok:
+        print(f"[ASP] DELETE {path} → {resp.status_code}: {resp.text}")
     resp.raise_for_status()
     return resp.status_code
 
@@ -92,15 +98,34 @@ def list_instances() -> list[dict]:
 # ── 2. Connections (source / sink) ─────────────────────────────────────────────
 
 def create_cluster_connection(connection_name: str) -> dict:
-    """Create a connection from the stream instance to the Atlas cluster."""
+    """Create a connection from the stream instance to the Atlas cluster.
+
+    Skips gracefully if the connection already exists.
+    """
+    # Check if connection already exists
+    try:
+        existing = list_connections()
+        for c in existing:
+            if c.get("name") == connection_name:
+                print(f"[ASP] Connection '{connection_name}' already exists, skipping")
+                return c
+    except Exception:
+        pass
+
     body = {
         "name": connection_name,
         "type": "Cluster",
         "clusterName": ATLAS_CLUSTER_NAME,
     }
-    result = _post(f"/streams/{ATLAS_STREAM_INSTANCE}/connections", body)
-    print(f"[ASP] Connection created: {connection_name}")
-    return result
+    try:
+        result = _post(f"/streams/{ATLAS_STREAM_INSTANCE}/connections", body)
+        print(f"[ASP] Connection created: {connection_name}")
+        return result
+    except requests.exceptions.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 409:
+            print(f"[ASP] Connection '{connection_name}' already exists (409)")
+            return {}
+        raise
 
 
 
@@ -201,10 +226,27 @@ def create_governance_tag_processor(connection: str = "amf_cluster") -> dict:
 
 
 def _create_processor(name: str, pipeline: list[dict]) -> dict:
+    """Create a processor, skipping if it already exists."""
+    # Check existing
+    try:
+        existing = list_processors()
+        for p in existing:
+            if p.get("name") == name:
+                print(f"[ASP] Processor '{name}' already exists, skipping")
+                return p
+    except Exception:
+        pass
+
     body: dict[str, Any] = {"name": name, "pipeline": pipeline}
-    result = _post(f"/streams/{ATLAS_STREAM_INSTANCE}/processor", body)
-    print(f"[ASP] Processor created: {name}")
-    return result
+    try:
+        result = _post(f"/streams/{ATLAS_STREAM_INSTANCE}/processor", body)
+        print(f"[ASP] Processor created: {name}")
+        return result
+    except requests.exceptions.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 409:
+            print(f"[ASP] Processor '{name}' already exists (409)")
+            return {}
+        raise
 
 
 # ── 4. Management helpers ─────────────────────────────────────────────────────
