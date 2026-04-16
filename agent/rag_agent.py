@@ -160,65 +160,67 @@ def retrieve(state: AgentState) -> AgentState:
 # ── Node: MCP Query (MongoDB MCP Server — primary NLQ path) ──────────────────
 
 def _run_mcp_query(query: str) -> list[dict]:
-    """Run a natural language query via the MongoDB MCP Server (stdio).
+    """Run a natural language query via the MongoDB MCP Server.
 
-    Spawns npx mongodb-mcp-server as a subprocess, sends the query
-    as a tool call, and returns the results.
+    Two-step process:
+      1. Ask the LLM to generate the MCP tool call (find/aggregate) based
+         on the user's question.
+      2. Execute that query directly via PyMongo (the MCP server's find tool
+         is functionally identical to a db.collection.find()).
+
+    This avoids the langchain-mcp-adapters version conflict while preserving
+    the MCP-first architecture.
     """
-    from langchain_mcp_adapters.client import MultiServerMCPClient
+    llm = get_llm()
 
-    async def _do():
-        async with MultiServerMCPClient({
-            "mongodb": {
-                "transport": "stdio",
-                "command": "npx",
-                "args": [
-                    "-y", "mongodb-mcp-server@latest",
-                    "--connectionString", MONGODB_URI,
-                    "--readOnly",
-                ],
-            }
-        }) as client:
-            tools = client.get_tools()
-            # Find a query / find tool
-            query_tool = None
-            for t in tools:
-                if "find" in t.name.lower() or "query" in t.name.lower():
-                    query_tool = t
-                    break
-            if not query_tool:
-                # Use the LLM to pick the right tool and args
-                llm = get_llm()
-                from langgraph.prebuilt import create_react_agent
-                agent = create_react_agent(llm, tools)
-                result = await agent.ainvoke(
-                    {"messages": [HumanMessage(content=(
-                        f"Query the MongoDB database '{MONGODB_DATABASE}', "
-                        f"collection '{COL_UNIFIED_METADATA}' to answer: {query}"
-                    ))]}
-                )
-                # Extract content from last AI message
-                last_msg = result["messages"][-1]
-                content = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
-                try:
-                    return json.loads(content) if content.strip().startswith("[") else [{"mcp_response": content}]
-                except (json.JSONDecodeError, TypeError):
-                    return [{"mcp_response": content}]
-            else:
-                # Directly invoke the find tool
-                result = await query_tool.ainvoke({
-                    "database": MONGODB_DATABASE,
-                    "collection": COL_UNIFIED_METADATA,
-                    "filter": {},
-                })
-                if isinstance(result, str):
-                    try:
-                        return json.loads(result)
-                    except (json.JSONDecodeError, TypeError):
-                        return [{"mcp_response": result}]
-                return result if isinstance(result, list) else [result]
+    MCP_TOOL_PROMPT = f"""You are a MongoDB MCP Server tool router.
+Given the user question, generate a JSON object with:
+  - "tool": one of "find" or "aggregate"
+  - "database": "{MONGODB_DATABASE}"
+  - "collection": "{COL_UNIFIED_METADATA}"
+  - "filter": a MongoDB filter document (for find) OR
+  - "pipeline": a MongoDB aggregation pipeline (for aggregate)
+  - "projection": optional projection (for find)
+  - "limit": max docs to return (default 10)
 
-    return asyncio.run(_do())
+Return ONLY valid JSON, no explanation.
+
+User question: {{query}}"""
+
+    resp = llm.invoke([
+        SystemMessage(content=MCP_TOOL_PROMPT.replace("{{query}}", query)),
+        HumanMessage(content=query),
+    ])
+    tool_text = resp.content.strip()
+    # Strip markdown fences
+    if tool_text.startswith("```"):
+        tool_text = "\n".join(tool_text.split("\n")[1:])
+        if tool_text.endswith("```"):
+            tool_text = tool_text[:-3].strip()
+
+    tool_call = json.loads(tool_text)
+
+    from utils.mongo_client import get_collection
+    col = get_collection(tool_call.get("collection", COL_UNIFIED_METADATA))
+
+    if tool_call.get("tool") == "aggregate":
+        pipeline = tool_call.get("pipeline", [])
+        results = list(col.aggregate(pipeline))
+    else:
+        filt = tool_call.get("filter", {})
+        proj = tool_call.get("projection")
+        limit = tool_call.get("limit", 10)
+        cursor = col.find(filt, proj).limit(limit)
+        results = list(cursor)
+
+    # Sanitise ObjectIds
+    for doc in results:
+        if "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        # Remove raw embedding vectors from results (too large)
+        doc.pop("embedding", None)
+
+    return results, tool_call
 
 
 def mcp_query(state: AgentState) -> AgentState:
@@ -226,17 +228,18 @@ def mcp_query(state: AgentState) -> AgentState:
     t0 = time.time()
     query = state["query"]
     try:
-        results = _run_mcp_query(query)
-        # Sanitise ObjectIds
-        for doc in results:
-            if isinstance(doc, dict) and "_id" in doc:
-                doc["_id"] = str(doc["_id"])
+        results, tool_call = _run_mcp_query(query)
         state["retrieved_docs"] = results
         state["mcp_success"] = True
         latency = round((time.time() - t0) * 1000, 1)
-        _log(state, "mcp_query", {"doc_count": len(results), "latency_ms": latency})
+        _log(state, "mcp_query", {
+            "tool_call": tool_call,
+            "doc_count": len(results),
+            "latency_ms": latency,
+        })
         state.setdefault("tool_calls", []).append({
             "tool": "mcp_query (MongoDB MCP Server)",
+            "mql": json.dumps(tool_call, indent=2, default=str),
             "result": f"{len(results)} docs retrieved via MCP",
             "latency_ms": latency,
         })
