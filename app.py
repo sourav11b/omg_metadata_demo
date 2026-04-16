@@ -212,35 +212,59 @@ and all Gen AI applications.
 # ── Architecture Diagrams ─────────────────────────────────────────────────────
 import streamlit.components.v1 as components
 
-_MERMAID_HTML = """
-<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-  mermaid.initialize({{ startOnLoad: true, theme: 'base',
-    themeVariables: {{
-      primaryColor: '#1a1a2e', primaryTextColor: '#e0e0e0',
-      primaryBorderColor: '#4a4a6a', lineColor: '#888',
-      secondaryColor: '#16213e', tertiaryColor: '#0f3460',
-      fontSize: '14px'
-    }}
-  }});
-</script>
-<div class="mermaid" style="background:#0e1117;padding:16px;border-radius:8px;">
+def _render_mermaid(diagram: str, height: int = 520) -> None:
+    """Render a Mermaid diagram inside a Streamlit component."""
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+      <style>
+        body {{ margin:0; padding:16px; background:#0e1117; }}
+        .mermaid {{ background:#0e1117; }}
+        .mermaid text {{ fill:#e0e0e0 !important; }}
+        .mermaid .nodeLabel {{ color:#e0e0e0 !important; }}
+        .mermaid .label {{ color:#e0e0e0 !important; }}
+        .mermaid .edgeLabel {{ background:#1a1a2e !important; color:#e0e0e0 !important; }}
+      </style>
+    </head>
+    <body>
+      <div class="mermaid">
 {diagram}
-</div>
-"""
+      </div>
+      <script>
+        mermaid.initialize({{
+          startOnLoad: true,
+          theme: 'dark',
+          themeVariables: {{
+            primaryColor: '#1a1a2e',
+            primaryTextColor: '#e0e0e0',
+            primaryBorderColor: '#4a4a6a',
+            lineColor: '#888',
+            secondaryColor: '#16213e',
+            tertiaryColor: '#0f3460',
+            fontSize: '14px',
+            edgeLabelBackground: '#1a1a2e'
+          }}
+        }});
+      </script>
+    </body>
+    </html>
+    """
+    components.html(html, height=height)
 
 with st.expander("📊 Data Ingestion & Consolidation Flow", expanded=False):
     st.caption("How heterogeneous metadata flows into MongoDB and gets consolidated into the Semantic Layer")
-    components.html(_MERMAID_HTML.format(diagram="""
+    _render_mermaid("""
 flowchart LR
     subgraph Sources["Heterogeneous Sources"]
         direction TB
-        LM["📋 Logical Models\\n• Entity definitions\\n• Attributes & types\\n• Relationships"]
-        PS["🗄️ Physical Schemas\\n• DB / Table / Columns\\n• Data types & formats\\n• Row counts"]
-        GT["🏷️ Governance Tags\\n• PII / SID tags\\n• Classification\\n• PTB status\\n• Regulatory frameworks"]
+        LM["Logical Models<br/>Entity definitions<br/>Attributes and types<br/>Relationships"]
+        PS["Physical Schemas<br/>DB / Table / Columns<br/>Data types and formats<br/>Row counts"]
+        GT["Governance Tags<br/>PII / SID tags<br/>Classification<br/>PTB status<br/>Regulatory frameworks"]
     end
 
-    subgraph Ingest["MongoDB Atlas\\n(Source Collections)"]
+    subgraph Ingest["MongoDB Atlas Source Collections"]
         direction TB
         C1[("source_logical_models")]
         C2[("source_physical_schemas")]
@@ -249,16 +273,16 @@ flowchart LR
 
     subgraph Process["Real-Time Processing"]
         direction TB
-        CS["⚡ Change Streams\\nWorker (Python)\\n• Watches all 3 collections\\n• Merges by entity_id"]
-        ASP["☁️ Atlas Stream\\nProcessing\\n• 3 parallel processors\\n• $merge into unified"]
+        CS["Change Streams Worker<br/>Watches all 3 collections<br/>Merges by entity_id"]
+        ASP["Atlas Stream Processing<br/>3 parallel processors<br/>merge into unified"]
     end
 
     subgraph Semantic["Semantic Layer"]
         direction TB
-        UM[("unified_metadata\\n• Consolidated document\\n• All sources merged")]
-        VE["🧬 Voyage AI\\nEmbeddings\\n(voyage-finance-2)"]
-        VS["🔍 Atlas Vector\\nSearch Index\\n(cosine similarity)"]
-        FTS["📝 Atlas Search\\nFull-Text Index\\n(BM25 / Lucene)"]
+        UM[("unified_metadata<br/>Consolidated document<br/>All sources merged")]
+        VE["Voyage AI Embeddings<br/>voyage-finance-2"]
+        VS["Atlas Vector Search Index<br/>cosine similarity"]
+        FTS["Atlas Search Full-Text Index<br/>BM25 / Lucene"]
     end
 
     LM --> C1
@@ -277,44 +301,42 @@ flowchart LR
     UM --> VE
     VE --> VS
     UM --> FTS
-
-    style Sources fill:#1a1a2e,stroke:#4a4a6a,color:#e0e0e0
-    style Ingest fill:#0f3460,stroke:#4a4a6a,color:#e0e0e0
-    style Process fill:#16213e,stroke:#4a4a6a,color:#e0e0e0
-    style Semantic fill:#1a1a2e,stroke:#00ed64,color:#e0e0e0
-    """), height=520)
+    """, height=520)
 
 with st.expander("🤖 RAG Chat Agent — Query Paths", expanded=False):
     st.caption("How the chatbot processes your question through different retrieval strategies")
-    components.html(_MERMAID_HTML.format(diagram="""
+    _render_mermaid("""
 flowchart TD
-    Q["💬 User Question"]
-    CI["🧠 Classify Intent\\n(Azure OpenAI)\\nDetermines best strategy"]
+    Q["User Question"]
+    CI["Classify Intent<br/>Azure OpenAI<br/>Determines best strategy"]
 
-    subgraph MCP["Step 1: MCP Query (Always First)"]
+    subgraph MCP["Step 1: MCP Query - Always First"]
         direction TB
-        MC["🔌 MongoDB MCP Server\\nLLM generates find/aggregate\\nExecutes via PyMongo"]
+        MC["MongoDB MCP Server<br/>LLM generates find/aggregate<br/>Executes via PyMongo"]
     end
 
-    MCPOK{{"MCP\\nSuccess?"}}
+    MCPOK{"MCP<br/>Success?"}
 
-    subgraph Fallback["Step 2: Fallback (if MCP fails)"]
+    subgraph Fallback["Step 2: Fallback if MCP fails"]
         direction TB
-        HY["🔀 Hybrid Search\\nMongoDBAtlasHybridSearchRetriever\\nVector + BM25 via RRF"]
-        SQ["🎯 Self-Query\\nMongoDBAtlasSelfQueryRetriever\\nLLM-generated metadata filters\\n(domain, PII, classification)"]
-        FT["📝 Full-Text\\nMongoDBAtlasFullTextSearchRetriever\\nBM25 keyword search"]
-        MQL["⚙️ Text-to-MQL\\nNL → MongoDB Aggregation\\nDirect pipeline execution"]
+        HY["Hybrid Search<br/>MongoDBAtlasHybridSearchRetriever<br/>Vector plus BM25 via RRF"]
+        SQ["Self-Query<br/>MongoDBAtlasSelfQueryRetriever<br/>LLM-generated metadata filters"]
+        FT["Full-Text<br/>MongoDBAtlasFullTextSearchRetriever<br/>BM25 keyword search"]
+        MQL["Text-to-MQL<br/>NL to MongoDB Aggregation<br/>Direct pipeline execution"]
     end
 
-    GEN["✨ Generate Answer\\n(Azure OpenAI gpt-4o)\\n• Includes governance context\\n• PII/SID/PTB tags highlighted"]
+    GEN["Generate Answer<br/>Azure OpenAI gpt-4o<br/>Includes governance context<br/>PII/SID/PTB tags highlighted"]
 
-    TRACE["📊 Execution Trace\\n• Intent classification\\n• Tool calls + latency\\n• Retrieved docs\\n• Governance tags"]
+    TRACE["Execution Trace<br/>Intent classification<br/>Tool calls and latency<br/>Retrieved docs<br/>Governance tags"]
 
     Q --> CI
     CI --> MC
     MC --> MCPOK
-    MCPOK -- "✅ Yes" --> GEN
-    MCPOK -- "❌ No" --> HY & SQ & FT & MQL
+    MCPOK -- "Yes" --> GEN
+    MCPOK -- "No" --> HY
+    MCPOK -- "No" --> SQ
+    MCPOK -- "No" --> FT
+    MCPOK -- "No" --> MQL
 
     HY --> GEN
     SQ --> GEN
@@ -322,14 +344,7 @@ flowchart TD
     MQL --> GEN
 
     GEN --> TRACE
-
-    style MCP fill:#0f3460,stroke:#00ed64,color:#e0e0e0
-    style Fallback fill:#1a1a2e,stroke:#e94560,color:#e0e0e0
-    style Q fill:#16213e,stroke:#4a4a6a,color:#e0e0e0
-    style GEN fill:#0f3460,stroke:#00ed64,color:#e0e0e0
-    style TRACE fill:#16213e,stroke:#4a4a6a,color:#e0e0e0
-    style MCPOK fill:#16213e,stroke:#ffc107,color:#e0e0e0
-    """), height=620)
+    """, height=650)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
