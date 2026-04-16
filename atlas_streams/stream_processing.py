@@ -22,11 +22,8 @@ import pprint
 from typing import Any
 
 import requests
-from requests.auth import HTTPDigestAuth
 
 from config.settings import (
-    ATLAS_PUBLIC_KEY,
-    ATLAS_PRIVATE_KEY,
     ATLAS_PROJECT_ID,
     ATLAS_STREAM_INSTANCE,
     ATLAS_API_BASE,
@@ -37,10 +34,11 @@ from config.settings import (
     COL_GOVERNANCE_TAGS,
     COL_UNIFIED_METADATA,
 )
+from utils.atlas_auth import get_atlas_auth
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-_AUTH = HTTPDigestAuth(ATLAS_PUBLIC_KEY, ATLAS_PRIVATE_KEY)
+_AUTH = get_atlas_auth()
 _HEADERS = {
     "Accept": "application/vnd.atlas.2024-05-30+json",
     "Content-Type": "application/vnd.atlas.2024-05-30+json",
