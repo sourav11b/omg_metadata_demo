@@ -116,6 +116,10 @@ def create_cluster_connection(connection_name: str) -> dict:
         "name": connection_name,
         "type": "Cluster",
         "clusterName": ATLAS_CLUSTER_NAME,
+        "dbRoleToExecute": {
+            "role": "readWriteAnyDatabase",
+            "type": "BUILT_IN",
+        },
     }
     try:
         result = _post(f"/streams/{ATLAS_STREAM_INSTANCE}/connections", body)
