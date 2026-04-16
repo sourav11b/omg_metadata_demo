@@ -264,7 +264,7 @@ def stop_processor(name: str) -> dict:
 
 
 def list_processors() -> list[dict]:
-    result = _get(f"/streams/{ATLAS_STREAM_INSTANCE}/processor")
+    result = _get(f"/streams/{ATLAS_STREAM_INSTANCE}/processors")
     procs = result.get("results", [])
     print(f"[ASP] {len(procs)} processor(s)")
     for p in procs:
@@ -279,20 +279,45 @@ def delete_processor(name: str) -> None:
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
+def _ensure_unique_index() -> None:
+    """Create a unique index on entity_id in unified_metadata.
+
+    $merge requires a unique index on the 'on' field to guarantee
+    that join fields are unique.
+    """
+    from utils.mongo_client import get_collection
+    col = get_collection(COL_UNIFIED_METADATA)
+    col.create_index("entity_id", unique=True, name="entity_id_unique")
+    print("[ASP] Unique index on unified_metadata.entity_id ensured ✓")
+
+
 def setup_all(connection: str = "amf_cluster") -> None:
-    """End-to-end: create connection + all three consolidation processors."""
+    """End-to-end: create index + connection + all three consolidation processors."""
     print("=" * 60)
     print("AMF-Agent  ·  Atlas Stream Processing Setup")
     print("=" * 60)
+
+    # Step 0: ensure unique index for $merge
+    _ensure_unique_index()
+
+    # Step 1: create connection
     create_cluster_connection(connection)
+
+    # Step 2: create processors
     create_logical_model_processor(connection)
     create_physical_schema_processor(connection)
     create_governance_tag_processor(connection)
+
+    # Step 3: start processors
     print("\nStarting processors …")
     for name in ("proc_logical_models", "proc_physical_schemas", "proc_governance_tags"):
-        start_processor(name)
+        try:
+            start_processor(name)
+            print(f"  ✓ {name} started")
+        except Exception as exc:
+            print(f"  ✗ {name} failed to start: {exc}")
     print("=" * 60)
-    print("All processors running.")
+    print("Setup complete.")
 
 
 if __name__ == "__main__":
