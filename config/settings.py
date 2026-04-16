@@ -14,6 +14,8 @@ COL_LOGICAL_MODELS = "source_logical_models"
 COL_PHYSICAL_SCHEMAS = "source_physical_schemas"
 COL_GOVERNANCE_TAGS = "source_governance_tags"
 COL_UNIFIED_METADATA = "unified_metadata"
+COL_CONVERSATION_HISTORY = "conversation_history"
+COL_SESSION_MEMORY = "session_memory"
 
 # ── Atlas Admin API ────────────────────────────────────────────────────────────
 ATLAS_PUBLIC_KEY: str = os.getenv("ATLAS_PUBLIC_KEY", "")

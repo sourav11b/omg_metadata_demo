@@ -14,14 +14,12 @@ Integrates:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, TypedDict
 
 from langchain_core.documents import Document
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import AzureChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
@@ -55,23 +53,29 @@ def get_llm() -> AzureChatOpenAI:
 
 # ── Agent State ────────────────────────────────────────────────────────────────
 
-@dataclass
-class AgentState:
+class AgentState(TypedDict, total=False):
     """Mutable state that flows through the LangGraph nodes."""
-    query: str = ""
-    intent: str = ""                       # hybrid | self_query | fulltext | mql
-    retrieved_docs: list[dict] = field(default_factory=list)
-    answer: str = ""
-    trace: list[dict] = field(default_factory=list)  # full execution trace
-    tool_calls: list[dict] = field(default_factory=list)
-    latency_ms: float = 0.0
+    query: str
+    intent: str                            # hybrid | self_query | fulltext | mql
+    retrieved_docs: list[dict]
+    answer: str
+    trace: list[dict]                      # full execution trace
+    tool_calls: list[dict]
+    latency_ms: float
+
+
+def _make_initial_state(query: str) -> AgentState:
+    return AgentState(
+        query=query, intent="", retrieved_docs=[],
+        answer="", trace=[], tool_calls=[], latency_ms=0.0,
+    )
 
 
 def _log(state: AgentState, step: str, detail: Any = None) -> None:
     entry = {"step": step, "ts": time.time()}
     if detail is not None:
         entry["detail"] = detail
-    state.trace.append(entry)
+    state.setdefault("trace", []).append(entry)
 
 
 # ── Node: Classify Intent ─────────────────────────────────────────────────────
@@ -90,15 +94,16 @@ def classify_intent(state: AgentState) -> AgentState:
     t0 = time.time()
     resp = llm.invoke([
         SystemMessage(content=INTENT_SYSTEM),
-        HumanMessage(content=state.query),
+        HumanMessage(content=state["query"]),
     ])
     intent = resp.content.strip().lower()
     if intent not in ("hybrid", "self_query", "fulltext", "mql"):
         intent = "hybrid"
-    state.intent = intent
+    state["intent"] = intent
     _log(state, "classify_intent", {"intent": intent})
-    state.tool_calls.append({"tool": "classify_intent", "result": intent,
-                             "latency_ms": round((time.time() - t0) * 1000, 1)})
+    state.setdefault("tool_calls", []).append(
+        {"tool": "classify_intent", "result": intent,
+         "latency_ms": round((time.time() - t0) * 1000, 1)})
     return state
 
 
@@ -117,33 +122,34 @@ def _docs_to_dicts(docs: list[Document]) -> list[dict]:
 
 def retrieve(state: AgentState) -> AgentState:
     t0 = time.time()
-    intent = state.intent
+    intent = state.get("intent", "hybrid")
+    query = state["query"]
     try:
         if intent == "hybrid":
             retriever = get_hybrid_retriever(k=5)
-            docs = retriever.invoke(state.query)
+            docs = retriever.invoke(query)
         elif intent == "self_query":
             llm = get_llm()
             retriever = get_self_query_retriever(llm)
-            docs = retriever.invoke(state.query)
+            docs = retriever.invoke(query)
         elif intent == "fulltext":
             retriever = get_fulltext_retriever(k=5)
-            docs = retriever.invoke(state.query)
+            docs = retriever.invoke(query)
         else:
             docs = []
 
-        state.retrieved_docs = _docs_to_dicts(docs)
+        state["retrieved_docs"] = _docs_to_dicts(docs)
         _log(state, "retrieve", {"strategy": intent, "doc_count": len(docs)})
-        state.tool_calls.append({
+        state.setdefault("tool_calls", []).append({
             "tool": f"retrieve_{intent}",
             "result": f"{len(docs)} docs retrieved",
             "latency_ms": round((time.time() - t0) * 1000, 1),
         })
     except Exception as exc:
         _log(state, "retrieve_error", {"error": str(exc)})
-        state.tool_calls.append({"tool": f"retrieve_{intent}", "error": str(exc)})
+        state.setdefault("tool_calls", []).append({"tool": f"retrieve_{intent}", "error": str(exc)})
         if intent != "hybrid":
-            state.intent = "hybrid"
+            state["intent"] = "hybrid"
             return retrieve(state)
     return state
 
@@ -164,7 +170,7 @@ def text_to_mql(state: AgentState) -> AgentState:
     t0 = time.time()
     resp = llm.invoke([
         SystemMessage(content=MQL_SYSTEM),
-        HumanMessage(content=state.query),
+        HumanMessage(content=state["query"]),
     ])
     mql_text = resp.content.strip()
     if mql_text.startswith("```"):
@@ -172,7 +178,7 @@ def text_to_mql(state: AgentState) -> AgentState:
         if mql_text.endswith("```"):
             mql_text = mql_text[:-3]
 
-    state.tool_calls.append({
+    state.setdefault("tool_calls", []).append({
         "tool": "text_to_mql",
         "mql": mql_text,
         "latency_ms": round((time.time() - t0) * 1000, 1),
@@ -186,12 +192,12 @@ def text_to_mql(state: AgentState) -> AgentState:
         for doc in results:
             if "_id" in doc:
                 doc["_id"] = str(doc["_id"])
-        state.retrieved_docs = results
-        state.tool_calls.append({"tool": "mql_execute", "result": f"{len(results)} docs"})
+        state["retrieved_docs"] = results
+        state.setdefault("tool_calls", []).append({"tool": "mql_execute", "result": f"{len(results)} docs"})
     except Exception as exc:
         _log(state, "mql_error", {"error": str(exc)})
-        state.tool_calls.append({"tool": "mql_execute", "error": str(exc)})
-        state.intent = "hybrid"
+        state.setdefault("tool_calls", []).append({"tool": "mql_execute", "error": str(exc)})
+        state["intent"] = "hybrid"
         return retrieve(state)
 
     return state
@@ -209,21 +215,20 @@ Be concise but thorough. If the context is insufficient, say so."""
 def generate(state: AgentState) -> AgentState:
     llm = get_llm()
     t0 = time.time()
-    context = json.dumps(state.retrieved_docs, indent=2, default=str)[:12000]
+    context = json.dumps(state.get("retrieved_docs", []), indent=2, default=str)[:12000]
     resp = llm.invoke([
         SystemMessage(content=ANSWER_SYSTEM),
         HumanMessage(content=(
             f"Context:\n{context}\n\n"
-            f"Question: {state.query}"
+            f"Question: {state['query']}"
         )),
     ])
-    state.answer = resp.content
+    state["answer"] = resp.content
     total = round((time.time() - t0) * 1000, 1)
     _log(state, "generate", {"latency_ms": total})
-    state.tool_calls.append({"tool": "generate_answer", "latency_ms": total})
-    # Compute total latency
-    state.latency_ms = round(sum(
-        tc.get("latency_ms", 0) for tc in state.tool_calls
+    state.setdefault("tool_calls", []).append({"tool": "generate_answer", "latency_ms": total})
+    state["latency_ms"] = round(sum(
+        tc.get("latency_ms", 0) for tc in state.get("tool_calls", [])
     ), 1)
     return state
 
@@ -232,7 +237,7 @@ def generate(state: AgentState) -> AgentState:
 
 def route_after_classify(state: AgentState) -> str:
     """Route to the correct retrieval node based on classified intent."""
-    if state.intent == "mql":
+    if state.get("intent") == "mql":
         return "text_to_mql"
     return "retrieve"
 
@@ -272,9 +277,9 @@ def get_graph():
     return _compiled_graph
 
 
-def ask(query: str) -> AgentState:
-    """Run a query through the full RAG pipeline and return the final state."""
+def ask(query: str) -> dict:
+    """Run a query through the full RAG pipeline and return the final state dict."""
     graph = get_graph()
-    initial = AgentState(query=query)
+    initial = _make_initial_state(query)
     result = graph.invoke(initial)
     return result

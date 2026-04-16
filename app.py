@@ -1,20 +1,40 @@
 """
 AMF-Agent – Atlas Metadata Fabric Semantic Layer Chat
 
-Streamlit application providing:
-  • RAG chat interface with hybrid search
-  • Full execution trace (intent → retrieval → generation)
-  • Tool call details with latency metrics
+Features:
+  • RAG chat with hybrid / self-query / full-text / Text-to-MQL retrieval
+  • Full execution trace with tool calls and latency
   • Governance tag visibility (PII, SID, PTB status)
+  • Ingestion & consolidation button with live status
+  • Data seed / index status dashboard
+  • Session memory persisted in MongoDB, with reset
+  • LangChain caching via MongoDB
 
 Usage:
     streamlit run app.py
 """
 
+import datetime
 import json
+import time
+import uuid
+
 import streamlit as st
 
-from agent.rag_agent import ask, AgentState
+from agent.rag_agent import ask
+from config.settings import (
+    COL_LOGICAL_MODELS,
+    COL_PHYSICAL_SCHEMAS,
+    COL_GOVERNANCE_TAGS,
+    COL_UNIFIED_METADATA,
+    COL_CONVERSATION_HISTORY,
+    COL_SESSION_MEMORY,
+    MONGODB_DATABASE,
+    VECTOR_SEARCH_INDEX,
+    FULLTEXT_SEARCH_INDEX,
+)
+from utils.mongo_client import get_collection, get_database
+
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -23,47 +43,87 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🧠 Atlas Metadata Fabric Agent")
-st.caption(
-    "Semantic Layer for Agentic Commerce — powered by MongoDB Atlas, "
-    "Voyage AI embeddings, Azure OpenAI, and LangGraph"
-)
+# ── MongoDB helpers ───────────────────────────────────────────────────────────
 
-# ── Sidebar: architecture info ────────────────────────────────────────────────
-with st.sidebar:
-    st.header("Architecture")
-    st.markdown("""
-    **Data Flow**
-    1. Heterogeneous sources → MongoDB collections
-    2. Change Streams / Atlas Stream Processing → consolidation
-    3. Voyage AI → vector embeddings
-    4. Atlas Vector Search + Atlas Search indexes
+def _col_count(name: str) -> int:
+    try:
+        return get_collection(name).count_documents({})
+    except Exception:
+        return 0
 
-    **RAG Pipeline (LangGraph)**
-    ```
-    classify_intent
-        ├─ hybrid (vector + BM25 RRF)
-        ├─ self_query (LLM-generated filters)
-        ├─ fulltext (BM25 keyword)
-        └─ mql (Text-to-MQL)
-    → generate answer
-    ```
 
-    **Observability**: LangSmith tracing
-    """)
-    st.divider()
-    st.markdown("**Sample Questions**")
-    samples = [
-        "What PII fields exist in the Customer entity?",
-        "Which entities are subject to PCI-DSS?",
-        "Show me the physical schema for transactions",
-        "What is the PTB status for the Account entity?",
-        "Find all entities with High sensitivity tags",
-        "What merchant data do we store and who is the data steward?",
-    ]
-    for s in samples:
-        if st.button(s, key=s):
-            st.session_state["prefill"] = s
+def _save_message(session_id: str, role: str, content: str,
+                  trace_data: dict | None = None) -> None:
+    """Persist a single chat message to MongoDB."""
+    doc = {
+        "session_id": session_id,
+        "role": role,
+        "content": content,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc),
+    }
+    if trace_data:
+        doc["trace_data"] = trace_data
+    get_collection(COL_CONVERSATION_HISTORY).insert_one(doc)
+
+
+def _load_session_messages(session_id: str) -> list[dict]:
+    """Load conversation history for a session from MongoDB."""
+    try:
+        docs = list(
+            get_collection(COL_CONVERSATION_HISTORY)
+            .find({"session_id": session_id}, {"_id": 0})
+            .sort("timestamp", 1)
+        )
+        return [{"role": d["role"], "content": d["content"],
+                 **({"trace_data": d["trace_data"]} if "trace_data" in d else {})}
+                for d in docs]
+    except Exception:
+        return []
+
+
+def _save_semantic_memory(session_id: str, query: str, answer: str,
+                          intent: str) -> None:
+    """Store a semantic memory entry (query → answer mapping)."""
+    get_collection(COL_SESSION_MEMORY).insert_one({
+        "session_id": session_id,
+        "query": query,
+        "answer": answer,
+        "intent": intent,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc),
+    })
+
+
+def _get_semantic_context(session_id: str, limit: int = 5) -> str:
+    """Retrieve recent semantic memory for context injection."""
+    try:
+        docs = list(
+            get_collection(COL_SESSION_MEMORY)
+            .find({"session_id": session_id}, {"_id": 0, "query": 1, "answer": 1})
+            .sort("timestamp", -1)
+            .limit(limit)
+        )
+        if not docs:
+            return ""
+        lines = []
+        for d in reversed(docs):
+            lines.append(f"Q: {d['query']}\nA: {d['answer']}")
+        return "\n---\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _clear_session(session_id: str) -> None:
+    """Delete all conversation and memory data for a session."""
+    get_collection(COL_CONVERSATION_HISTORY).delete_many({"session_id": session_id})
+    get_collection(COL_SESSION_MEMORY).delete_many({"session_id": session_id})
+
+
+# ── Session ID management ─────────────────────────────────────────────────────
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+if "messages" not in st.session_state:
+    st.session_state.messages = _load_session_messages(st.session_state.session_id)
+
 
 # ── Trace rendering helper ────────────────────────────────────────────────────
 
@@ -71,7 +131,7 @@ def _render_trace(trace_data: dict) -> None:
     """Render the full execution trace inside expandable sections."""
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("Retrieval Strategy", trace_data.get("intent", "—").upper())
+        st.metric("Retrieval Strategy", str(trace_data.get("intent", "—")).upper())
     with col2:
         st.metric("Total Latency", f"{trace_data.get('latency_ms', 0):.0f} ms")
 
@@ -94,7 +154,6 @@ def _render_trace(trace_data: dict) -> None:
             st.info("No documents retrieved.")
         for i, doc in enumerate(docs, 1):
             st.markdown(f"### Doc {i}: {doc.get('entity_name', doc.get('entity_id', ''))}")
-            # Highlight governance tags
             gov = doc.get("governance", {})
             if gov:
                 tags = gov.get("tags", [])
@@ -115,44 +174,158 @@ def _render_trace(trace_data: dict) -> None:
         st.json(trace_data.get("trace", []))
 
 
-# ── Chat history ──────────────────────────────────────────────────────────────
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# ── Header ────────────────────────────────────────────────────────────────────
+st.title("🧠 Atlas Metadata Fabric Agent")
+st.caption(
+    "Semantic Layer for Agentic Commerce — powered by MongoDB Atlas, "
+    "Voyage AI embeddings, Azure OpenAI, and LangGraph"
+)
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.header("⚙️ Controls")
+
+    # ── Session management ─────────────────────────────────────────────────
+    st.subheader("Session")
+    st.caption(f"ID: `{st.session_state.session_id[:8]}…`")
+    if st.button("🔄 Reset Session", use_container_width=True):
+        _clear_session(st.session_state.session_id)
+        st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.messages = []
+        st.rerun()
+
+    st.divider()
+
+    # ── Ingestion & Consolidation ──────────────────────────────────────────
+    st.subheader("📥 Data Ingestion")
+    if st.button("▶️ Ingest & Consolidate", use_container_width=True):
+        status_area = st.empty()
+        progress = st.progress(0)
+
+        # Step 1: Ingest source data
+        status_area.info("⏳ Ingesting logical models …")
+        from ingestion.ingest import (
+            ingest_logical_models, ingest_physical_schemas, ingest_governance_tags,
+        )
+        lm = ingest_logical_models()
+        progress.progress(20)
+
+        status_area.info("⏳ Ingesting physical schemas …")
+        ps = ingest_physical_schemas()
+        progress.progress(40)
+
+        status_area.info("⏳ Ingesting governance tags …")
+        gt = ingest_governance_tags()
+        progress.progress(60)
+
+        # Step 2: Consolidate
+        status_area.info("⏳ Consolidating into unified documents …")
+        from ingestion.change_stream_worker import consolidate_all
+        consolidate_all()
+        progress.progress(100)
+
+        status_area.success(
+            f"✅ Done — Logical: {lm}, Physical: {ps}, Governance: {gt} docs ingested & consolidated"
+        )
+
+    st.divider()
+
+    # ── Data & Index Status Dashboard ──────────────────────────────────────
+    st.subheader("📊 Status Dashboard")
+    if st.button("🔃 Refresh Status", use_container_width=True) or "show_status" not in st.session_state:
+        st.session_state.show_status = True
+
+    if st.session_state.get("show_status"):
+        st.markdown("**Collection Counts**")
+        cols = st.columns(2)
+        with cols[0]:
+            st.metric("Logical Models", _col_count(COL_LOGICAL_MODELS))
+            st.metric("Physical Schemas", _col_count(COL_PHYSICAL_SCHEMAS))
+        with cols[1]:
+            st.metric("Governance Tags", _col_count(COL_GOVERNANCE_TAGS))
+            st.metric("Unified Metadata", _col_count(COL_UNIFIED_METADATA))
+
+        st.markdown("**Session Data**")
+        st.metric("Conversation Messages", _col_count(COL_CONVERSATION_HISTORY))
+        st.metric("Semantic Memories", _col_count(COL_SESSION_MEMORY))
+
+        # Index status
+        st.markdown("**Search Indexes**")
+        try:
+            col = get_collection(COL_UNIFIED_METADATA)
+            indexes = list(col.list_search_indexes())
+            for idx in indexes:
+                name = idx.get("name", "?")
+                status = idx.get("status", "?")
+                icon = "✅" if status == "READY" else "⏳"
+                st.write(f"{icon} `{name}` — {status}")
+            if not indexes:
+                st.warning("No search indexes found. Run `python -m indexes.setup_indexes`")
+        except Exception as e:
+            st.warning(f"Could not list indexes: {e}")
+
+    st.divider()
+
+    # ── Sample questions ───────────────────────────────────────────────────
+    st.subheader("💡 Sample Questions")
+    samples = [
+        "What PII fields exist in the Customer entity?",
+        "Which entities are subject to PCI-DSS?",
+        "Show me the physical schema for transactions",
+        "What is the PTB status for the Account entity?",
+        "Find all entities with High sensitivity tags",
+        "What merchant data do we store and who is the data steward?",
+    ]
+    for s in samples:
+        if st.button(s, key=s):
+            st.session_state["prefill"] = s
+
+
+# ── Chat history ──────────────────────────────────────────────────────────────
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "trace_data" in msg:
             _render_trace(msg["trace_data"])
 
-# ── Input ─────────────────────────────────────────────────────────────────────
+# ── Chat input ────────────────────────────────────────────────────────────────
 prefill = st.session_state.pop("prefill", "")
 user_input = st.chat_input("Ask about your metadata fabric …") or prefill
 
 if user_input:
+    # Save & display user message
     st.session_state.messages.append({"role": "user", "content": user_input})
+    _save_message(st.session_state.session_id, "user", user_input)
+
     with st.chat_message("user"):
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
         with st.spinner("Reasoning …"):
-            result: AgentState = ask(user_input)
+            result = ask(user_input)
 
-        # ── Answer ────────────────────────────────────────────────────────
-        st.markdown(result.answer)
+        answer = result.get("answer", "No answer generated.")
+        st.markdown(answer)
 
-        # ── Trace panel ──────────────────────────────────────────────────
+        # Build trace data
         trace_data = {
-            "intent": result.intent,
-            "tool_calls": result.tool_calls,
-            "trace": result.trace,
-            "retrieved_docs": result.retrieved_docs,
-            "latency_ms": result.latency_ms,
+            "intent": result.get("intent", ""),
+            "tool_calls": result.get("tool_calls", []),
+            "trace": result.get("trace", []),
+            "retrieved_docs": result.get("retrieved_docs", []),
+            "latency_ms": result.get("latency_ms", 0),
         }
         _render_trace(trace_data)
 
+        # Persist to MongoDB
+        _save_message(st.session_state.session_id, "assistant", answer, trace_data)
+        _save_semantic_memory(
+            st.session_state.session_id, user_input, answer,
+            result.get("intent", ""),
+        )
+
         st.session_state.messages.append({
             "role": "assistant",
-            "content": result.answer,
+            "content": answer,
             "trace_data": trace_data,
         })
