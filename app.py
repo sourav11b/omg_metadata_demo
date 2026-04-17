@@ -492,7 +492,16 @@ if user_input:
 
     with st.chat_message("assistant"):
         with st.spinner("Reasoning …"):
-            result = ask(user_input, schema_context=st.session_state.get("schema_context", ""))
+            # Build chat history from session messages (role + content only, no trace)
+            history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in st.session_state.messages
+            ]
+            result = ask(
+                user_input,
+                schema_context=st.session_state.get("schema_context", ""),
+                chat_history=history,
+            )
 
         answer = result.get("answer", "No answer generated.")
         st.markdown(answer)

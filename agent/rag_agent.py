@@ -65,14 +65,31 @@ class AgentState(TypedDict, total=False):
     latency_ms: float
     mcp_success: bool                      # whether MCP query succeeded
     schema_context: str                    # collection schema injected at session start
+    chat_history: list[dict]               # prior conversation turns [{role, content}]
 
 
-def _make_initial_state(query: str, schema_context: str = "") -> AgentState:
+def _make_initial_state(query: str, schema_context: str = "",
+                        chat_history: list[dict] | None = None) -> AgentState:
     return AgentState(
         query=query, intent="", retrieved_docs=[],
         answer="", trace=[], tool_calls=[], latency_ms=0.0,
         mcp_success=False, schema_context=schema_context,
+        chat_history=chat_history or [],
     )
+
+
+def _history_to_messages(state: AgentState) -> list:
+    """Convert chat_history dicts to LangChain message objects."""
+    msgs = []
+    for turn in state.get("chat_history", []):
+        role = turn.get("role", "user")
+        content = turn.get("content", "")
+        if role == "user":
+            msgs.append(HumanMessage(content=content))
+        else:
+            from langchain_core.messages import AIMessage
+            msgs.append(AIMessage(content=content))
+    return msgs
 
 
 def _log(state: AgentState, step: str, detail: Any = None) -> None:
@@ -101,10 +118,11 @@ if the user EXPLICITLY asks to look at raw/source data.
 def classify_intent(state: AgentState) -> AgentState:
     llm = get_llm()
     t0 = time.time()
-    resp = llm.invoke([
-        SystemMessage(content=INTENT_SYSTEM),
-        HumanMessage(content=state["query"]),
-    ])
+    messages = [SystemMessage(content=INTENT_SYSTEM)]
+    # Include recent history so intent classification understands follow-ups
+    messages.extend(_history_to_messages(state))
+    messages.append(HumanMessage(content=state["query"]))
+    resp = llm.invoke(messages)
     intent = resp.content.strip().lower()
     if intent not in ("hybrid", "self_query", "fulltext", "mql"):
         intent = "hybrid"
@@ -165,7 +183,8 @@ def retrieve(state: AgentState) -> AgentState:
 
 # ── Node: MCP Query (MongoDB MCP Server — primary NLQ path) ──────────────────
 
-def _run_mcp_query(query: str, schema_context: str = "") -> list[dict]:
+def _run_mcp_query(query: str, schema_context: str = "",
+                   chat_history: list[dict] | None = None) -> list[dict]:
     """Run a natural language query via the MongoDB MCP Server.
 
     Two-step process:
@@ -207,10 +226,18 @@ Return ONLY valid JSON, no explanation.
 
 User question: {{query}}"""
 
-    resp = llm.invoke([
-        SystemMessage(content=MCP_TOOL_PROMPT.replace("{{query}}", query)),
-        HumanMessage(content=query),
-    ])
+    messages = [SystemMessage(content=MCP_TOOL_PROMPT.replace("{{query}}", query))]
+    # Include conversation history for follow-up context
+    for turn in (chat_history or []):
+        role = turn.get("role", "user")
+        content = turn.get("content", "")
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        else:
+            from langchain_core.messages import AIMessage
+            messages.append(AIMessage(content=content))
+    messages.append(HumanMessage(content=query))
+    resp = llm.invoke(messages)
     tool_text = resp.content.strip()
     # Strip markdown fences
     if tool_text.startswith("```"):
@@ -248,7 +275,10 @@ def mcp_query(state: AgentState) -> AgentState:
     t0 = time.time()
     query = state["query"]
     try:
-        results, tool_call = _run_mcp_query(query, state.get("schema_context", ""))
+        results, tool_call = _run_mcp_query(
+            query, state.get("schema_context", ""),
+            chat_history=state.get("chat_history", []),
+        )
         state["retrieved_docs"] = results
         state["mcp_success"] = True
         latency = round((time.time() - t0) * 1000, 1)
@@ -366,13 +396,15 @@ def generate(state: AgentState) -> AgentState:
     llm = get_llm()
     t0 = time.time()
     context = json.dumps(state.get("retrieved_docs", []), indent=2, default=str)[:12000]
-    resp = llm.invoke([
-        SystemMessage(content=ANSWER_SYSTEM),
-        HumanMessage(content=(
-            f"Context:\n{context}\n\n"
-            f"Question: {state['query']}"
-        )),
-    ])
+
+    messages = [SystemMessage(content=ANSWER_SYSTEM)]
+    # Inject conversation history so LLM can handle follow-ups
+    messages.extend(_history_to_messages(state))
+    messages.append(HumanMessage(content=(
+        f"Context:\n{context}\n\n"
+        f"Question: {state['query']}"
+    )))
+    resp = llm.invoke(messages)
     state["answer"] = resp.content
     total = round((time.time() - t0) * 1000, 1)
     _log(state, "generate", {"latency_ms": total})
@@ -441,9 +473,20 @@ def get_graph():
     return _compiled_graph
 
 
-def ask(query: str, schema_context: str = "") -> dict:
-    """Run a query through the full RAG pipeline and return the final state dict."""
+def ask(query: str, schema_context: str = "",
+        chat_history: list[dict] | None = None) -> dict:
+    """Run a query through the full RAG pipeline and return the final state dict.
+
+    Args:
+        query: The user's question.
+        schema_context: Collection schema text for MCP/MQL prompts.
+        chat_history: Prior conversation turns [{role, content}, ...].
+                      Last 10 turns are used to enable follow-up questions.
+    """
+    # Limit to last 10 turns to avoid token overflow
+    history = (chat_history or [])[-10:]
     graph = get_graph()
-    initial = _make_initial_state(query, schema_context=schema_context)
+    initial = _make_initial_state(query, schema_context=schema_context,
+                                  chat_history=history)
     result = graph.invoke(initial)
     return result
