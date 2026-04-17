@@ -89,7 +89,7 @@ A demo application that simulates metadata ingestion, consolidation, and discove
 ## Project Structure
 
 ```
-amex_OMG_demo/
+omg_metadata_demo/
 ├── config/
 │   └── settings.py                 # Centralised configuration from .env
 ├── data/

@@ -205,7 +205,7 @@ system"** for AI.
 
 ---
 
-**OMG (One Meta Guard):** Amex's system for standardization, tagging, and governance
+**OMG (One Meta Guard):** An enterprise system for standardization, tagging, and governance
 of metadata (e.g., PII, SIDs). It is the Permit to Build (PTB) gateway for new
 business requirements, ensuring tagging happens correctly and guardrails are applied
 before production. OMG is already in production and will consume the Semantic Layer.
