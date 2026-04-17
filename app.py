@@ -218,32 +218,17 @@ and all Gen AI applications.
     """)
 
 # ── Architecture Diagrams ─────────────────────────────────────────────────────
-import streamlit.components.v1 as components
+import base64
 
-def _render_mermaid(diagram: str, height: int = 520) -> None:
-    """Render a Mermaid diagram inside a Streamlit component."""
-    # Escape the diagram for safe JS embedding
-    escaped = diagram.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
-    html = (
-        '<!DOCTYPE html><html><head>'
-        '<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>'
-        '</head><body style="margin:0;padding:12px;background:#0e1117;">'
-        '<div id="graph"></div>'
-        '<script>'
-        'mermaid.initialize({startOnLoad:false,theme:"dark",'
-        'themeVariables:{'
-        'primaryColor:"#1a1a2e",primaryTextColor:"#e0e0e0",'
-        'primaryBorderColor:"#4a4a6a",lineColor:"#888",'
-        'secondaryColor:"#16213e",tertiaryColor:"#0f3460",'
-        'fontSize:"13px",edgeLabelBackground:"#1a1a2e"'
-        '}});'
-        'var def = `' + escaped + '`;'
-        'mermaid.render("mermaid-svg", def).then(function(result){'
-        'document.getElementById("graph").innerHTML = result.svg;'
-        '});'
-        '</script></body></html>'
-    )
-    components.html(html, height=height)
+
+def _render_mermaid(diagram: str) -> None:
+    """Render a Mermaid diagram as an image via mermaid.ink service."""
+    diagram_stripped = diagram.strip()
+    # Encode diagram to base64 for mermaid.ink URL
+    diagram_bytes = diagram_stripped.encode("utf-8")
+    b64 = base64.urlsafe_b64encode(diagram_bytes).decode("ascii")
+    url = f"https://mermaid.ink/img/{b64}?theme=dark&bgColor=0e1117"
+    st.image(url, use_container_width=True)
 
 with st.expander("📊 Data Ingestion & Consolidation Flow", expanded=False):
     st.caption("How heterogeneous metadata flows into MongoDB and gets consolidated into the Semantic Layer")
@@ -293,7 +278,7 @@ flowchart LR
     UM --> VE
     VE --> VS
     UM --> FTS
-    """, height=520)
+    """)
 
 with st.expander("🤖 RAG Chat Agent — Query Paths", expanded=False):
     st.caption("How the chatbot routes your question based on classified intent")
@@ -340,7 +325,7 @@ flowchart TD
     MQL --> GEN
 
     GEN --> TRACE
-    """, height=700)
+    """)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
