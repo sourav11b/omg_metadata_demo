@@ -459,6 +459,18 @@ with st.sidebar:
     # ── Sample questions ───────────────────────────────────────────────────
     st.subheader("💡 Sample Questions")
 
+    st.markdown("**🧬 Vector Search** *(pure semantic similarity)*")
+    vector_samples = [
+        "What entities are semantically related to customer identity verification?",
+        "Find metadata similar to anti-money laundering compliance",
+        "What data concepts are related to real-time fraud scoring?",
+        "Show entities conceptually connected to card payment authorization",
+        "What metadata is similar to merchant risk profiling?",
+    ]
+    for s in vector_samples:
+        if st.button(s, key=s):
+            st.session_state["prefill"] = s
+
     st.markdown("**🔀 Hybrid Search** *(semantic + keyword)*")
     hybrid_samples = [
         "What PII fields exist in the Customer entity?",

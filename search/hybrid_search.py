@@ -78,6 +78,13 @@ def get_vector_store() -> MongoDBAtlasVectorSearch:
     )
 
 
+# ── 0. Pure Vector Retriever (semantic similarity only) ──────────────────────
+
+def get_vector_retriever(k: int = 5):
+    """Return a pure vector search retriever (cosine similarity via Voyage AI)."""
+    return get_vector_store().as_retriever(search_kwargs={"k": k})
+
+
 # ── 1. Hybrid Retriever (Vector + Full-Text via RRF) ─────────────────────────
 
 def get_hybrid_retriever(k: int = 5) -> MongoDBAtlasHybridSearchRetriever:

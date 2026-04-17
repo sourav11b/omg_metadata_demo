@@ -34,6 +34,7 @@ from config.settings import (
     COL_UNIFIED_METADATA,
 )
 from search.hybrid_search import (
+    get_vector_retriever,
     get_hybrid_retriever,
     get_self_query_retriever,
     get_fulltext_retriever,
@@ -103,10 +104,11 @@ def _log(state: AgentState, step: str, detail: Any = None) -> None:
 
 INTENT_SYSTEM = f"""You are a metadata search router. Given the user's question,
 decide the best retrieval strategy. Respond with EXACTLY one word:
-  hybrid     – general semantic + keyword question
-  self_query – question that filters on specific metadata fields (domain, classification, PII, etc.)
-  fulltext   – simple keyword lookup
-  mql        – user wants raw data or a structured MongoDB query
+  vector     – conceptual / semantic similarity question (e.g. "entities related to …", "similar to …", "what data do we have about …")
+  hybrid     – general question that benefits from both semantic + keyword matching
+  self_query – question that filters on specific metadata fields (domain, classification, PII, sensitivity, steward, regulation, ptb_status)
+  fulltext   – simple keyword / exact term lookup
+  mql        – user wants counts, aggregations, comparisons, raw data, or a structured MongoDB query
 
 IMPORTANT: All queries should target the '{COL_UNIFIED_METADATA}' collection by default.
 This is the consolidated semantic layer containing all metadata. Only use source
@@ -124,7 +126,7 @@ def classify_intent(state: AgentState) -> AgentState:
     messages.append(HumanMessage(content=state["query"]))
     resp = llm.invoke(messages)
     intent = resp.content.strip().lower()
-    if intent not in ("hybrid", "self_query", "fulltext", "mql"):
+    if intent not in ("vector", "hybrid", "self_query", "fulltext", "mql"):
         intent = "hybrid"
     state["intent"] = intent
     _log(state, "classify_intent", {"intent": intent})
@@ -152,7 +154,10 @@ def retrieve(state: AgentState) -> AgentState:
     intent = state.get("intent", "hybrid")
     query = state["query"]
     try:
-        if intent == "hybrid":
+        if intent == "vector":
+            retriever = get_vector_retriever(k=5)
+            docs = retriever.invoke(query)
+        elif intent == "hybrid":
             retriever = get_hybrid_retriever(k=5)
             docs = retriever.invoke(query)
         elif intent == "self_query":
