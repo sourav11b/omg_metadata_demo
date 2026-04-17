@@ -458,15 +458,65 @@ with st.sidebar:
 
     # ── Sample questions ───────────────────────────────────────────────────
     st.subheader("💡 Sample Questions")
-    samples = [
+
+    st.markdown("**🔀 Hybrid Search** *(semantic + keyword)*")
+    hybrid_samples = [
         "What PII fields exist in the Customer entity?",
-        "Which entities are subject to PCI-DSS?",
+        "Which entities handle credit line limits and thresholds?",
+        "Tell me about merchant data — what do we store and who is the steward?",
+        "What entities are related to fraud detection and risk scoring?",
+        "Describe the metadata for payment transaction processing",
+        "What loyalty and rewards entities exist in our fabric?",
+    ]
+    for s in hybrid_samples:
+        if st.button(s, key=s):
+            st.session_state["prefill"] = s
+
+    st.markdown("**🎯 Self-Query / Filtered** *(metadata filters)*")
+    filter_samples = [
+        "Find all entities with High sensitivity PII tags",
+        "Which entities are subject to PCI-DSS regulation?",
+        "Show all Confidential entities in the Payments domain",
+        "List entities with PTB status 'Pending' or 'Under Review'",
+        "What entities does data steward Sarah Patel manage?",
+        "Find all entities in the Lending domain with GDPR compliance",
+    ]
+    for s in filter_samples:
+        if st.button(s, key=s):
+            st.session_state["prefill"] = s
+
+    st.markdown("**📝 Full-Text / Keyword** *(BM25 search)*")
+    fulltext_samples = [
         "Show me the physical schema for transactions",
         "What is the PTB status for the Account entity?",
-        "Find all entities with High sensitivity tags",
-        "What merchant data do we store and who is the data steward?",
+        "Find entities stored in the RISK_DW database",
+        "Which entities use Parquet or Delta storage format?",
     ]
-    for s in samples:
+    for s in fulltext_samples:
+        if st.button(s, key=s):
+            st.session_state["prefill"] = s
+
+    st.markdown("**⚙️ Text-to-MQL** *(structured MongoDB queries)*")
+    mql_samples = [
+        "Count how many entities exist per domain",
+        "List all distinct data stewards and how many entities each manages",
+        "Show entities where governance classification is Restricted and sensitivity is High",
+        "What are the top 5 domains by number of entities?",
+        "Find all entities that have more than 6 attributes",
+        "Show me entities with SID tags grouped by regulatory framework",
+    ]
+    for s in mql_samples:
+        if st.button(s, key=s):
+            st.session_state["prefill"] = s
+
+    st.markdown("**🔄 Follow-up** *(ask these after a previous question)*")
+    followup_samples = [
+        "Tell me more about its governance tags",
+        "What regulatory frameworks apply to that entity?",
+        "Compare it with entities in the Risk & Fraud domain",
+        "Who is the data steward for that one?",
+    ]
+    for s in followup_samples:
         if st.button(s, key=s):
             st.session_state["prefill"] = s
 
