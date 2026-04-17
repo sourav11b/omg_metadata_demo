@@ -222,43 +222,27 @@ import streamlit.components.v1 as components
 
 def _render_mermaid(diagram: str, height: int = 520) -> None:
     """Render a Mermaid diagram inside a Streamlit component."""
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-      <style>
-        body {{ margin:0; padding:16px; background:#0e1117; }}
-        .mermaid {{ background:#0e1117; }}
-        .mermaid text {{ fill:#e0e0e0 !important; }}
-        .mermaid .nodeLabel {{ color:#e0e0e0 !important; }}
-        .mermaid .label {{ color:#e0e0e0 !important; }}
-        .mermaid .edgeLabel {{ background:#1a1a2e !important; color:#e0e0e0 !important; }}
-      </style>
-    </head>
-    <body>
-      <div class="mermaid">
-{diagram}
-      </div>
-      <script>
-        mermaid.initialize({{
-          startOnLoad: true,
-          theme: 'dark',
-          themeVariables: {{
-            primaryColor: '#1a1a2e',
-            primaryTextColor: '#e0e0e0',
-            primaryBorderColor: '#4a4a6a',
-            lineColor: '#888',
-            secondaryColor: '#16213e',
-            tertiaryColor: '#0f3460',
-            fontSize: '14px',
-            edgeLabelBackground: '#1a1a2e'
-          }}
-        }});
-      </script>
-    </body>
-    </html>
-    """
+    # Escape the diagram for safe JS embedding
+    escaped = diagram.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+    html = (
+        '<!DOCTYPE html><html><head>'
+        '<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>'
+        '</head><body style="margin:0;padding:12px;background:#0e1117;">'
+        '<div id="graph"></div>'
+        '<script>'
+        'mermaid.initialize({startOnLoad:false,theme:"dark",'
+        'themeVariables:{'
+        'primaryColor:"#1a1a2e",primaryTextColor:"#e0e0e0",'
+        'primaryBorderColor:"#4a4a6a",lineColor:"#888",'
+        'secondaryColor:"#16213e",tertiaryColor:"#0f3460",'
+        'fontSize:"13px",edgeLabelBackground:"#1a1a2e"'
+        '}});'
+        'var def = `' + escaped + '`;'
+        'mermaid.render("mermaid-svg", def).then(function(result){'
+        'document.getElementById("graph").innerHTML = result.svg;'
+        '});'
+        '</script></body></html>'
+    )
     components.html(html, height=height)
 
 with st.expander("📊 Data Ingestion & Consolidation Flow", expanded=False):
