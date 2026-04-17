@@ -124,6 +124,14 @@ if "session_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = _load_session_messages(st.session_state.session_id)
 
+# ── Schema introspection at session start ─────────────────────────────────────
+if "schema_context" not in st.session_state:
+    from utils.schema_inspector import inspect_collection
+    try:
+        st.session_state.schema_context = inspect_collection()
+    except Exception:
+        st.session_state.schema_context = ""
+
 
 # ── Trace rendering helper ────────────────────────────────────────────────────
 
@@ -357,6 +365,12 @@ with st.sidebar:
         _clear_session(st.session_state.session_id)
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.messages = []
+        # Re-introspect schema on reset
+        from utils.schema_inspector import inspect_collection
+        try:
+            st.session_state.schema_context = inspect_collection()
+        except Exception:
+            st.session_state.schema_context = ""
         st.rerun()
 
     st.divider()
@@ -451,6 +465,11 @@ with st.sidebar:
         except Exception as e:
             st.warning(f"Could not list indexes: {e}")
 
+        # Schema context
+        if st.session_state.get("schema_context"):
+            with st.expander("🔎 Collection Schema (session context)", expanded=False):
+                st.code(st.session_state.schema_context, language="text")
+
     st.divider()
 
     # ── Sample questions ───────────────────────────────────────────────────
@@ -489,7 +508,7 @@ if user_input:
 
     with st.chat_message("assistant"):
         with st.spinner("Reasoning …"):
-            result = ask(user_input)
+            result = ask(user_input, schema_context=st.session_state.get("schema_context", ""))
 
         answer = result.get("answer", "No answer generated.")
         st.markdown(answer)

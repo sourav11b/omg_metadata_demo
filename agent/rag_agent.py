@@ -64,13 +64,14 @@ class AgentState(TypedDict, total=False):
     tool_calls: list[dict]
     latency_ms: float
     mcp_success: bool                      # whether MCP query succeeded
+    schema_context: str                    # collection schema injected at session start
 
 
-def _make_initial_state(query: str) -> AgentState:
+def _make_initial_state(query: str, schema_context: str = "") -> AgentState:
     return AgentState(
         query=query, intent="", retrieved_docs=[],
         answer="", trace=[], tool_calls=[], latency_ms=0.0,
-        mcp_success=False,
+        mcp_success=False, schema_context=schema_context,
     )
 
 
@@ -164,19 +165,22 @@ def retrieve(state: AgentState) -> AgentState:
 
 # ── Node: MCP Query (MongoDB MCP Server — primary NLQ path) ──────────────────
 
-def _run_mcp_query(query: str) -> list[dict]:
+def _run_mcp_query(query: str, schema_context: str = "") -> list[dict]:
     """Run a natural language query via the MongoDB MCP Server.
 
     Two-step process:
       1. Ask the LLM to generate the MCP tool call (find/aggregate) based
-         on the user's question.
-      2. Execute that query directly via PyMongo (the MCP server's find tool
-         is functionally identical to a db.collection.find()).
-
-    This avoids the langchain-mcp-adapters version conflict while preserving
-    the MCP-first architecture.
+         on the user's question and the collection schema.
+      2. Execute that query directly via PyMongo.
     """
     llm = get_llm()
+
+    schema_section = ""
+    if schema_context:
+        schema_section = f"""
+COLLECTION SCHEMA (use this to write accurate field paths and filters):
+{schema_context}
+"""
 
     MCP_TOOL_PROMPT = f"""You are a MongoDB MCP Server tool router.
 Given the user question, generate a JSON object with:
@@ -185,7 +189,7 @@ Given the user question, generate a JSON object with:
   - "collection": the target collection name
   - "filter": a MongoDB filter document (for find) OR
   - "pipeline": a MongoDB aggregation pipeline (for aggregate)
-  - "projection": optional projection (for find)
+  - "projection": optional projection (for find, omit 'embedding' and 'embedding_text')
   - "limit": max docs to return (default 10)
 
 IMPORTANT: Always use collection '{COL_UNIFIED_METADATA}' by default. This is the
@@ -196,6 +200,8 @@ Only use these source collections if the user EXPLICITLY asks for raw/source dat
   - 'source_logical_models' — raw logical model definitions
   - 'source_physical_schemas' — raw physical DB schema info
   - 'source_governance_tags' — raw governance/classification tags
+
+{schema_section}
 
 Return ONLY valid JSON, no explanation.
 
@@ -242,7 +248,7 @@ def mcp_query(state: AgentState) -> AgentState:
     t0 = time.time()
     query = state["query"]
     try:
-        results, tool_call = _run_mcp_query(query)
+        results, tool_call = _run_mcp_query(query, state.get("schema_context", ""))
         state["retrieved_docs"] = results
         state["mcp_success"] = True
         latency = round((time.time() - t0) * 1000, 1)
@@ -296,8 +302,12 @@ def text_to_mql(state: AgentState) -> AgentState:
 
     llm = get_llm()
     t0 = time.time()
+    schema_ctx = state.get("schema_context", "")
+    system_prompt = MQL_SYSTEM
+    if schema_ctx:
+        system_prompt += f"\n\nCOLLECTION SCHEMA:\n{schema_ctx}"
     resp = llm.invoke([
-        SystemMessage(content=MQL_SYSTEM),
+        SystemMessage(content=system_prompt),
         HumanMessage(content=state["query"]),
     ])
     mql_text = resp.content.strip()
@@ -431,9 +441,9 @@ def get_graph():
     return _compiled_graph
 
 
-def ask(query: str) -> dict:
+def ask(query: str, schema_context: str = "") -> dict:
     """Run a query through the full RAG pipeline and return the final state dict."""
     graph = get_graph()
-    initial = _make_initial_state(query)
+    initial = _make_initial_state(query, schema_context=schema_context)
     result = graph.invoke(initial)
     return result
