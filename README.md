@@ -42,10 +42,15 @@ A demo application that simulates metadata ingestion, consolidation, and discove
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    LangGraph RAG Agent                              │
 │                                                                     │
-│  classify_intent ──┬── hybrid (Vector + BM25 via RRF)              │
-│                    ├── self_query (LLM-generated filters)          │
-│                    ├── fulltext (BM25 keyword)                     │
-│                    └── mql (Text-to-MQL)                           │
+│  classify_intent                                                    │
+│    ├─ vector    → Vector Search (cosine similarity)                │
+│    ├─ hybrid    → Hybrid Search (Vector + BM25 via RRF)            │
+│    ├─ fulltext  → Full-Text Search (BM25 keyword)                  │
+│    ├─ self_query → MongoDB MCP Server* → fallback: Self-Query      │
+│    └─ mql       → MongoDB MCP Server* → fallback: Text-to-MQL     │
+│                          │                                          │
+│  * MCP Server: LLM generates find/aggregate queries executed via   │
+│    PyMongo, following the MCP (Model Context Protocol) pattern     │
 │                          │                                          │
 │                          ▼                                          │
 │                    generate_answer (Azure OpenAI)                   │
@@ -63,13 +68,16 @@ A demo application that simulates metadata ingestion, consolidation, and discove
 - **Heterogeneous Metadata Ingestion** — Logical models, physical schemas, and governance tags ingested into separate MongoDB collections
 - **Real-Time Consolidation** — Change Streams worker and Atlas Stream Processing pipelines merge disparate sources into a single unified document
 - **Voyage AI Embeddings** — Vector embeddings generated and stored natively in Atlas Vector Search
-- **Hybrid Search** — Three retriever strategies via `langchain-mongodb`:
-  - `MongoDBAtlasHybridSearchRetriever` (Vector + BM25 via Reciprocal Rank Fusion)
-  - `MongoDBAtlasSelfQueryRetriever` (LLM-generated metadata filters)
-  - `MongoDBAtlasFullTextSearchRetriever` (BM25 keyword search)
-- **Text-to-MQL** — Natural language translated to MongoDB aggregation pipelines
+- **MongoDB MCP Server (Model Context Protocol)** — Primary query path for structured queries (`self_query`, `mql` intents). The LLM generates MongoDB `find`/`aggregate` queries following the MCP tool-call pattern, executed directly via PyMongo against the `unified_metadata` collection. Falls back to native retrievers on failure
+- **Five Retrieval Strategies** via `langchain-mongodb`:
+  - `Vector Search` — Pure cosine similarity via Voyage AI embeddings
+  - `MongoDBAtlasHybridSearchRetriever` — Vector + BM25 via Reciprocal Rank Fusion
+  - `MongoDBAtlasFullTextSearchRetriever` — BM25 keyword search
+  - `MongoDBAtlasSelfQueryRetriever` — LLM-generated metadata filters (MCP-first, then fallback)
+  - `Text-to-MQL` — Natural language translated to MongoDB aggregation pipelines (MCP-first, then fallback)
 - **Governance as a First-Class Citizen** — PII tags, SIDs, classification, PTB status, and regulatory frameworks surfaced in every response
-- **Full Execution Trace** — Intent classification, tool calls, latency metrics, and retrieved documents visible in the UI
+- **Conversation Memory** — Session history persisted in MongoDB; LLM receives prior turns for follow-up question support
+- **Full Execution Trace** — Intent classification, MCP tool calls, latency metrics, and retrieved documents visible in the UI
 - **LangSmith Observability** — End-to-end tracing of the RAG pipeline
 
 ## Tech Stack
@@ -78,7 +86,8 @@ A demo application that simulates metadata ingestion, consolidation, and discove
 |---|---|
 | Database | MongoDB Atlas |
 | Real-Time Processing | Change Streams, Atlas Stream Processing |
-| Embeddings | Voyage AI (`voyage-3.5`) |
+| MCP Server | MongoDB MCP Server (LLM-driven find/aggregate via MCP pattern) |
+| Embeddings | Voyage AI (`voyage-finance-2`) |
 | Vector Search | Atlas Vector Search |
 | Full-Text Search | Atlas Search (Lucene BM25) |
 | LLM | Azure OpenAI (`gpt-4o`) |
@@ -93,7 +102,7 @@ omg_metadata_demo/
 ├── config/
 │   └── settings.py                 # Centralised configuration from .env
 ├── data/
-│   └── seed_data.py                # Sample metadata (5 entities × 3 sources)
+│   └── seed_data.py                # Programmatic metadata generator (1000+ entities per batch)
 ├── ingestion/
 │   ├── ingest.py                   # Seed data → MongoDB source collections
 │   └── change_stream_worker.py     # Real-time consolidation + embedding
@@ -104,11 +113,13 @@ omg_metadata_demo/
 ├── search/
 │   └── hybrid_search.py            # Hybrid / SelfQuery / FullText retrievers
 ├── agent/
-│   └── rag_agent.py                # LangGraph state machine (RAG pipeline)
+│   └── rag_agent.py                # LangGraph state machine (MCP-first RAG pipeline)
 ├── indexes/
 │   └── setup_indexes.py            # Vector Search + Atlas Search index creation
 ├── utils/
-│   └── mongo_client.py             # MongoDB client singleton
+│   ├── mongo_client.py             # MongoDB client singleton
+│   ├── atlas_auth.py               # Atlas Admin API auth (OAuth2 / Digest auto-detect)
+│   └── schema_inspector.py         # Collection schema introspection for LLM context
 ├── app.py                          # Streamlit chat application
 ├── requirements.txt
 └── env.example                     # Environment variable template
@@ -190,14 +201,16 @@ streamlit run app.py
 
 ## Sample Questions
 
-| Question | Retrieval Strategy |
-|---|---|
-| *What PII fields exist in the Customer entity?* | Hybrid |
-| *Which entities are subject to PCI-DSS?* | Self-Query |
-| *Show me the physical schema for transactions* | Full-Text |
-| *What is the PTB status for the Account entity?* | Hybrid |
-| *Find all entities with High sensitivity tags* | Self-Query |
-| *List all entities and their data stewards* | Text-to-MQL |
+| Question | Intent | Path |
+|---|---|---|
+| *What entities are semantically related to fraud scoring?* | `vector` | Vector Search (cosine) |
+| *What PII fields exist in the Customer entity?* | `hybrid` | Hybrid (Vector + BM25 RRF) |
+| *Describe the metadata for payment transaction processing* | `hybrid` | Hybrid (Vector + BM25 RRF) |
+| *Find entities stored in the RISK_DW database* | `fulltext` | Full-Text (BM25 keyword) |
+| *Which entities are subject to PCI-DSS?* | `self_query` | MCP Server → Self-Query fallback |
+| *Show all Confidential entities in the Payments domain* | `self_query` | MCP Server → Self-Query fallback |
+| *Count how many entities exist per domain* | `mql` | MCP Server → Text-to-MQL fallback |
+| *List all distinct data stewards and how many entities each manages* | `mql` | MCP Server → Text-to-MQL fallback |
 
 ## LangSmith Tracing
 
