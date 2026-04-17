@@ -296,47 +296,51 @@ flowchart LR
     """, height=520)
 
 with st.expander("🤖 RAG Chat Agent — Query Paths", expanded=False):
-    st.caption("How the chatbot processes your question through different retrieval strategies")
+    st.caption("How the chatbot routes your question based on classified intent")
     _render_mermaid("""
 flowchart TD
     Q["User Question"]
-    CI["Classify Intent<br/>Azure OpenAI<br/>Determines best strategy"]
+    CI["Classify Intent<br/>Azure OpenAI<br/>vector / hybrid / fulltext / self_query / mql"]
 
-    subgraph MCP["Step 1: MCP Query - Always First"]
+    subgraph Native["Native Retrievers (direct path)"]
         direction TB
-        MC["MongoDB MCP Server<br/>LLM generates find/aggregate<br/>Executes via PyMongo"]
+        VEC["Vector Search<br/>Pure cosine similarity<br/>via Voyage AI embeddings"]
+        HY["Hybrid Search<br/>Vector plus BM25<br/>Reciprocal Rank Fusion"]
+        FT["Full-Text Search<br/>BM25 keyword<br/>Atlas Search index"]
     end
 
-    MCPOK{"MCP<br/>Success?"}
-
-    subgraph Fallback["Step 2: Fallback if MCP fails"]
+    subgraph MCP_Path["MCP-First Path (structured queries)"]
         direction TB
-        HY["Hybrid Search<br/>MongoDBAtlasHybridSearchRetriever<br/>Vector plus BM25 via RRF"]
-        SQ["Self-Query<br/>MongoDBAtlasSelfQueryRetriever<br/>LLM-generated metadata filters"]
-        FT["Full-Text<br/>MongoDBAtlasFullTextSearchRetriever<br/>BM25 keyword search"]
+        MC["MCP Query<br/>LLM generates find/aggregate<br/>Executes via PyMongo"]
+        MCPOK{"MCP<br/>Success?"}
+        SQ["Self-Query Retriever<br/>LLM-generated metadata filters<br/>domain, PII, classification"]
         MQL["Text-to-MQL<br/>NL to MongoDB Aggregation<br/>Direct pipeline execution"]
     end
 
-    GEN["Generate Answer<br/>Azure OpenAI gpt-4o<br/>Includes governance context<br/>PII/SID/PTB tags highlighted"]
+    GEN["Generate Answer<br/>Azure OpenAI gpt-4o<br/>Governance context included<br/>PII/SID/PTB tags highlighted"]
 
-    TRACE["Execution Trace<br/>Intent classification<br/>Tool calls and latency<br/>Retrieved docs<br/>Governance tags"]
+    TRACE["Execution Trace<br/>Intent / Tool calls / Latency<br/>Retrieved docs / Governance tags"]
 
     Q --> CI
-    CI --> MC
+    CI -- "vector" --> VEC
+    CI -- "hybrid" --> HY
+    CI -- "fulltext" --> FT
+    CI -- "self_query" --> MC
+    CI -- "mql" --> MC
+
     MC --> MCPOK
     MCPOK -- "Yes" --> GEN
-    MCPOK -- "No" --> HY
-    MCPOK -- "No" --> SQ
-    MCPOK -- "No" --> FT
-    MCPOK -- "No" --> MQL
+    MCPOK -- "No, self_query" --> SQ
+    MCPOK -- "No, mql" --> MQL
 
+    VEC --> GEN
     HY --> GEN
-    SQ --> GEN
     FT --> GEN
+    SQ --> GEN
     MQL --> GEN
 
     GEN --> TRACE
-    """, height=650)
+    """, height=700)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:

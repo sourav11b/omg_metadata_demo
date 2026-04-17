@@ -422,15 +422,26 @@ def generate(state: AgentState) -> AgentState:
 
 # ── Router Edges ──────────────────────────────────────────────────────────────
 
+def route_after_classify(state: AgentState) -> str:
+    """Route based on intent after classification.
+
+    vector / hybrid / fulltext → go directly to their native retrievers
+    self_query / mql           → try MCP first (structured query via LLM)
+    """
+    intent = state.get("intent", "hybrid")
+    if intent in ("self_query", "mql"):
+        return "mcp_query"
+    return "retrieve"  # vector, hybrid, fulltext all go to retrieve
+
+
 def route_after_mcp(state: AgentState) -> str:
-    """After MCP: if it succeeded, go straight to generate; otherwise fallback."""
+    """After MCP: if it succeeded, go to generate; otherwise fallback."""
     if state.get("mcp_success"):
         return "generate"
-    # MCP failed — fall back based on intent
     intent = state.get("intent", "hybrid")
     if intent == "mql":
         return "text_to_mql"
-    return "retrieve"
+    return "retrieve"  # self_query falls back to retriever
 
 
 # ── Build the Graph ───────────────────────────────────────────────────────────
@@ -439,9 +450,16 @@ def build_graph() -> StateGraph:
     """Build and compile the LangGraph state machine.
 
     Flow:
-      classify_intent → mcp_query (always try MCP first)
-        ├─ success → generate
-        └─ fail   → retrieve / text_to_mql (based on intent) → generate
+      classify_intent
+        ├─ vector    → retrieve (pure cosine similarity) → generate
+        ├─ hybrid    → retrieve (vector + BM25 RRF) → generate
+        ├─ fulltext  → retrieve (BM25 keyword) → generate
+        ├─ self_query → mcp_query first
+        │     ├─ success → generate
+        │     └─ fail   → retrieve (self-query retriever) → generate
+        └─ mql → mcp_query first
+              ├─ success → generate
+              └─ fail   → text_to_mql → generate
     """
     graph = StateGraph(AgentState)
 
@@ -454,7 +472,9 @@ def build_graph() -> StateGraph:
 
     # Edges
     graph.add_edge(START, "classify_intent")
-    graph.add_edge("classify_intent", "mcp_query")  # always try MCP first
+    graph.add_conditional_edges("classify_intent", route_after_classify,
+                                {"mcp_query": "mcp_query",
+                                 "retrieve": "retrieve"})
     graph.add_conditional_edges("mcp_query", route_after_mcp,
                                 {"generate": "generate",
                                  "retrieve": "retrieve",
