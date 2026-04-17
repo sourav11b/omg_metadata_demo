@@ -17,7 +17,19 @@ from langchain_mongodb.retrievers import (
     MongoDBAtlasHybridSearchRetriever,
 )
 from langchain_mongodb.retrievers.self_querying import MongoDBAtlasSelfQueryRetriever
-from langchain.chains.query_constructor.schema import AttributeInfo
+try:
+    from langchain.chains.query_constructor.schema import AttributeInfo
+except (ImportError, ModuleNotFoundError):
+    try:
+        from langchain_community.query_constructors.schema import AttributeInfo  # type: ignore
+    except (ImportError, ModuleNotFoundError):
+        from dataclasses import dataclass
+
+        @dataclass
+        class AttributeInfo:  # type: ignore
+            name: str
+            description: str
+            type: str
 
 from config.settings import (
     COL_UNIFIED_METADATA,
