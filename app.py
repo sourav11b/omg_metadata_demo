@@ -29,9 +29,12 @@ from config.settings import (
     COL_UNIFIED_METADATA,
     COL_CONVERSATION_HISTORY,
     COL_SESSION_MEMORY,
+    COL_DLQ,
     MONGODB_DATABASE,
     VECTOR_SEARCH_INDEX,
     FULLTEXT_SEARCH_INDEX,
+    ATLAS_STREAM_INSTANCE,
+    ATLAS_PROJECT_ID,
 )
 from utils.mongo_client import get_collection, get_database
 
@@ -42,6 +45,28 @@ st.set_page_config(
     page_icon="🧠",
     layout="wide",
 )
+
+
+# ── Startup: ensure stream processors have DLQ ───────────────────────────────
+
+@st.cache_resource(show_spinner="Checking Atlas Stream Processors …")
+def _ensure_stream_processors() -> dict | None:
+    """Run once per app lifecycle: verify stream processors exist with DLQ.
+
+    Skips gracefully if Atlas Stream Processing is not configured
+    (missing ATLAS_STREAM_INSTANCE or ATLAS_PROJECT_ID).
+    """
+    if not ATLAS_STREAM_INSTANCE or not ATLAS_PROJECT_ID:
+        return None  # ASP not configured — skip silently
+    try:
+        from atlas_streams.stream_processing import ensure_processors_with_dlq
+        return ensure_processors_with_dlq()
+    except Exception as exc:
+        print(f"[startup] Stream processor check failed (non-fatal): {exc}")
+        return None
+
+_asp_result = _ensure_stream_processors()
+
 
 # ── MongoDB helpers ───────────────────────────────────────────────────────────
 
@@ -419,9 +444,25 @@ with st.sidebar:
             st.metric("Governance Tags", _col_count(COL_GOVERNANCE_TAGS))
             st.metric("Unified Metadata", _col_count(COL_UNIFIED_METADATA))
 
-        st.markdown("**Session Data**")
-        st.metric("Conversation Messages", _col_count(COL_CONVERSATION_HISTORY))
-        st.metric("Semantic Memories", _col_count(COL_SESSION_MEMORY))
+        st.markdown("**Session Data & DLQ**")
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            st.metric("Conversation Messages", _col_count(COL_CONVERSATION_HISTORY))
+        with s2:
+            st.metric("Semantic Memories", _col_count(COL_SESSION_MEMORY))
+        with s3:
+            dlq_count = _col_count(COL_DLQ)
+            st.metric("Dead Letter Queue", dlq_count)
+            if dlq_count > 0:
+                st.warning(f"⚠️ {dlq_count} failed event(s) in DLQ")
+
+        # Stream processor status
+        if _asp_result is not None:
+            st.markdown("**Atlas Stream Processors**")
+            for label, key in [("✅ OK", "ok"), ("🆕 Created", "created"), ("♻️ Recreated (DLQ added)", "recreated")]:
+                items = _asp_result.get(key, [])
+                if items:
+                    st.write(f"{label}: {', '.join(items)}")
 
         # Index status
         st.markdown("**Search Indexes**")

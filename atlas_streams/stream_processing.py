@@ -299,6 +299,86 @@ def delete_processor(name: str) -> None:
     print(f"[ASP] Deleted processor: {name}")
 
 
+# ── 5. Startup health-check / ensure DLQ ─────────────────────────────────────
+
+# Map processor names → their creation functions
+_PROCESSOR_CREATORS = {
+    "proc_logical_models": create_logical_model_processor,
+    "proc_physical_schemas": create_physical_schema_processor,
+    "proc_governance_tags": create_governance_tag_processor,
+}
+
+
+def _processor_has_dlq(proc: dict) -> bool:
+    """Check whether a processor already has a DLQ configured."""
+    options = proc.get("options", {})
+    dlq = options.get("dlq", {})
+    return bool(dlq.get("coll"))
+
+
+def ensure_processors_with_dlq(connection: str = "amf_cluster") -> dict:
+    """Startup check: ensure all three processors exist with DLQ configured.
+
+    For each expected processor:
+      - If it doesn't exist → create it (with DLQ)
+      - If it exists but has no DLQ → stop, delete, and recreate it (with DLQ)
+      - If it exists and already has DLQ → leave it alone
+
+    Returns a summary dict: {"created": [...], "recreated": [...], "ok": [...]}
+    """
+    summary: dict[str, list[str]] = {"created": [], "recreated": [], "ok": []}
+
+    # Ensure prerequisites
+    _ensure_unique_index()
+    create_cluster_connection(connection)
+
+    # Fetch current processors
+    try:
+        existing = {p["name"]: p for p in list_processors()}
+    except Exception as exc:
+        print(f"[ASP] Could not list processors: {exc}")
+        return summary
+
+    for name, creator_fn in _PROCESSOR_CREATORS.items():
+        if name not in existing:
+            # Processor missing → create fresh
+            print(f"[ASP] Processor '{name}' not found — creating with DLQ …")
+            creator_fn(connection)
+            try:
+                start_processor(name)
+                print(f"[ASP]   ✓ {name} started")
+            except Exception as exc:
+                print(f"[ASP]   ✗ {name} failed to start: {exc}")
+            summary["created"].append(name)
+
+        elif not _processor_has_dlq(existing[name]):
+            # Processor exists but no DLQ → stop + delete + recreate
+            print(f"[ASP] Processor '{name}' exists but has NO DLQ — recreating …")
+            try:
+                stop_processor(name)
+            except Exception:
+                pass  # may already be stopped
+            try:
+                delete_processor(name)
+            except Exception as exc:
+                print(f"[ASP]   ✗ Could not delete '{name}': {exc}")
+                summary["ok"].append(name)  # leave it alone
+                continue
+            creator_fn(connection)
+            try:
+                start_processor(name)
+                print(f"[ASP]   ✓ {name} recreated with DLQ and started")
+            except Exception as exc:
+                print(f"[ASP]   ✗ {name} recreated but failed to start: {exc}")
+            summary["recreated"].append(name)
+
+        else:
+            print(f"[ASP] Processor '{name}' ✓ (DLQ already configured)")
+            summary["ok"].append(name)
+
+    return summary
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 def _ensure_unique_index() -> None:
@@ -348,6 +428,9 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "setup"
     if cmd == "setup":
         setup_all()
+    elif cmd == "ensure":
+        result = ensure_processors_with_dlq()
+        print(f"\n[ASP] Ensure result: {result}")
     elif cmd == "list":
         list_processors()
     elif cmd == "status":
@@ -355,4 +438,4 @@ if __name__ == "__main__":
         list_connections()
         list_processors()
     else:
-        print(f"Unknown command: {cmd}  (try: setup | list | status)")
+        print(f"Unknown command: {cmd}  (try: setup | ensure | list | status)")
