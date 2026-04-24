@@ -15,14 +15,46 @@ import datetime
 import threading
 import time
 
+import traceback
+
 from config.settings import (
     COL_LOGICAL_MODELS,
     COL_PHYSICAL_SCHEMAS,
     COL_GOVERNANCE_TAGS,
     COL_UNIFIED_METADATA,
+    COL_DLQ,
 )
 from embeddings.voyage_embeddings import generate_embedding
 from utils.mongo_client import get_collection, get_database
+
+
+def _write_to_dlq(entity_id: str, source: str, error: Exception,
+                  document: dict | None = None) -> None:
+    """Write a failed consolidation event to the dead letter queue collection.
+
+    Each DLQ document captures:
+      - entity_id & source collection that triggered the failure
+      - error class, message, and full traceback
+      - the original document (if available) for replay / inspection
+      - timestamp for SLA tracking
+    """
+    try:
+        dlq_doc = {
+            "entity_id": entity_id,
+            "source_collection": source,
+            "error_type": type(error).__name__,
+            "error_message": str(error),
+            "traceback": traceback.format_exc(),
+            "original_document": document,
+            "status": "pending",          # pending | retried | resolved
+            "retry_count": 0,
+            "created_at": datetime.datetime.now(datetime.timezone.utc),
+        }
+        get_collection(COL_DLQ).insert_one(dlq_doc)
+        print(f"[DLQ] Written failed event for {entity_id} ({source})")
+    except Exception as dlq_exc:
+        # Last resort — don't let DLQ failures crash the worker
+        print(f"[DLQ] CRITICAL: Could not write to DLQ: {dlq_exc}")
 
 
 def _build_text_for_embedding(doc: dict) -> str:
@@ -176,6 +208,7 @@ def consolidate_all() -> dict:
             _increment_stat("total_consolidated", 0)  # updates timestamp
         except Exception as exc:
             errors += 1
+            _write_to_dlq(eid, "consolidate_all", exc)
             print(f"[consolidate] Error on {eid}: {exc}")
 
     with _stats_lock:
@@ -214,6 +247,7 @@ def _background_consolidation_loop() -> None:
                         _increment_stat("total_consolidated", 0)
                     except Exception as exc:
                         _increment_stat("errors")
+                        _write_to_dlq(eid, "bg_consolidate", exc)
                         print(f"[bg-consolidate] Error on {eid}: {exc}")
         except Exception as exc:
             print(f"[bg-consolidate] Loop error: {exc}")
@@ -261,10 +295,18 @@ def _watch_collection(col_name: str) -> None:
             for change in stream:
                 entity_id = change.get("fullDocument", {}).get("entity_id")
                 if entity_id:
-                    consolidate_entity(entity_id)
-                    _increment_stat("total_consolidated", 0)
+                    try:
+                        consolidate_entity(entity_id)
+                        _increment_stat("total_consolidated", 0)
+                    except Exception as exc:
+                        _increment_stat("errors")
+                        _write_to_dlq(
+                            entity_id, col_name, exc,
+                            document=change.get("fullDocument"),
+                        )
+                        print(f"[watch] Error consolidating {entity_id}: {exc}")
     except Exception as exc:
-        print(f"[watch] Error on {col_name}: {exc}")
+        print(f"[watch] Stream error on {col_name}: {exc}")
 
 
 def run_change_stream_workers() -> None:

@@ -33,6 +33,7 @@ from config.settings import (
     COL_PHYSICAL_SCHEMAS,
     COL_GOVERNANCE_TAGS,
     COL_UNIFIED_METADATA,
+    COL_DLQ,
 )
 from utils.atlas_auth import get_atlas_auth
 
@@ -180,7 +181,7 @@ def create_logical_model_processor(connection: str = "amf_cluster") -> dict:
         },
         _make_merge_sink(connection),
     ]
-    return _create_processor("proc_logical_models", pipeline)
+    return _create_processor("proc_logical_models", pipeline, connection)
 
 
 def create_physical_schema_processor(connection: str = "amf_cluster") -> dict:
@@ -204,7 +205,7 @@ def create_physical_schema_processor(connection: str = "amf_cluster") -> dict:
         },
         _make_merge_sink(connection),
     ]
-    return _create_processor("proc_physical_schemas", pipeline)
+    return _create_processor("proc_physical_schemas", pipeline, connection)
 
 
 def create_governance_tag_processor(connection: str = "amf_cluster") -> dict:
@@ -226,11 +227,28 @@ def create_governance_tag_processor(connection: str = "amf_cluster") -> dict:
         },
         _make_merge_sink(connection),
     ]
-    return _create_processor("proc_governance_tags", pipeline)
+    return _create_processor("proc_governance_tags", pipeline, connection)
 
 
-def _create_processor(name: str, pipeline: list[dict]) -> dict:
-    """Create a processor, skipping if it already exists."""
+def _make_dlq_options(connection: str = "amf_cluster") -> dict:
+    """Build the Dead Letter Queue (DLQ) options for a stream processor.
+
+    Messages that fail processing (validation errors, $merge conflicts,
+    malformed documents, etc.) are written to the DLQ collection instead of
+    being silently dropped.  This enables post-hoc inspection and replay.
+    """
+    return {
+        "dlq": {
+            "coll": COL_DLQ,
+            "connectionName": connection,
+            "db": MONGODB_DATABASE,
+        }
+    }
+
+
+def _create_processor(name: str, pipeline: list[dict],
+                      connection: str = "amf_cluster") -> dict:
+    """Create a processor with a Dead Letter Queue, skipping if it already exists."""
     # Check existing
     try:
         existing = list_processors()
@@ -241,10 +259,14 @@ def _create_processor(name: str, pipeline: list[dict]) -> dict:
     except Exception:
         pass
 
-    body: dict[str, Any] = {"name": name, "pipeline": pipeline}
+    body: dict[str, Any] = {
+        "name": name,
+        "pipeline": pipeline,
+        "options": _make_dlq_options(connection),
+    }
     try:
         result = _post(f"/streams/{ATLAS_STREAM_INSTANCE}/processor", body)
-        print(f"[ASP] Processor created: {name}")
+        print(f"[ASP] Processor created: {name} (DLQ → {MONGODB_DATABASE}.{COL_DLQ})")
         return result
     except requests.exceptions.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 409:
