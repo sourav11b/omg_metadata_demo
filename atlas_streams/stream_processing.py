@@ -181,6 +181,7 @@ def create_logical_model_processor(connection: str = "amf_cluster") -> dict:
         _make_source_stage(COL_LOGICAL_MODELS, connection),
         {
             "$project": {
+                "_id": 0,  # drop change-stream resume token _id
                 "entity_id": "$fullDocument.entity_id",
                 "entity_name": "$fullDocument.entity_name",
                 "domain": "$fullDocument.domain",
@@ -208,6 +209,7 @@ def create_physical_schema_processor(connection: str = "amf_cluster") -> dict:
         _make_source_stage(COL_PHYSICAL_SCHEMAS, connection),
         {
             "$project": {
+                "_id": 0,  # drop change-stream resume token _id
                 "entity_id": "$fullDocument.entity_id",
                 "physical": {
                     "database": "$fullDocument.database",
@@ -235,6 +237,7 @@ def create_governance_tag_processor(connection: str = "amf_cluster") -> dict:
         _make_source_stage(COL_GOVERNANCE_TAGS, connection),
         {
             "$project": {
+                "_id": 0,  # drop change-stream resume token _id
                 "entity_id": "$fullDocument.entity_id",
                 "governance": {
                     "classification": "$fullDocument.classification",
