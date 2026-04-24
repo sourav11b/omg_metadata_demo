@@ -427,8 +427,28 @@ def route_after_classify(state: AgentState) -> str:
 
     vector / hybrid / fulltext → go directly to their native retrievers
     self_query / mql           → try MCP first (structured query via LLM)
+
+    If the user's query contains "skip MCP" (case-insensitive), MCP is
+    bypassed entirely and the fallback path is used instead:
+      - mql       → text_to_mql
+      - self_query → retrieve (self-query retriever)
     """
     intent = state.get("intent", "hybrid")
+    query = state.get("query", "")
+
+    # Check for explicit MCP bypass trigger
+    skip_mcp = "skip mcp" in query.lower()
+    if skip_mcp:
+        # Strip the trigger phrase from the query so downstream nodes
+        # don't see it as part of the actual question.
+        import re
+        cleaned = re.sub(r"(?i)\s*skip\s+mcp\s*", " ", query).strip()
+        state["query"] = cleaned
+        _log(state, "skip_mcp", "User requested MCP bypass")
+        if intent == "mql":
+            return "text_to_mql"
+        return "retrieve"
+
     if intent in ("self_query", "mql"):
         return "mcp_query"
     return "retrieve"  # vector, hybrid, fulltext all go to retrieve
@@ -460,6 +480,10 @@ def build_graph() -> StateGraph:
         └─ mql → mcp_query first
               ├─ success → generate
               └─ fail   → text_to_mql → generate
+
+    "skip MCP" in query → bypass MCP entirely:
+        ├─ mql       → text_to_mql directly → generate
+        └─ self_query → retrieve directly → generate
     """
     graph = StateGraph(AgentState)
 
@@ -474,7 +498,8 @@ def build_graph() -> StateGraph:
     graph.add_edge(START, "classify_intent")
     graph.add_conditional_edges("classify_intent", route_after_classify,
                                 {"mcp_query": "mcp_query",
-                                 "retrieve": "retrieve"})
+                                 "retrieve": "retrieve",
+                                 "text_to_mql": "text_to_mql"})
     graph.add_conditional_edges("mcp_query", route_after_mcp,
                                 {"generate": "generate",
                                  "retrieve": "retrieve",
