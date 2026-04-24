@@ -137,12 +137,20 @@ def create_cluster_connection(connection_name: str) -> dict:
 # ── 3. Stream Processors (consolidation pipelines) ────────────────────────────
 
 def _make_source_stage(collection: str, connection: str = "amf_cluster") -> dict:
-    """$source stage reading from an Atlas collection."""
+    """$source stage reading from an Atlas collection.
+
+    ASP $source emits change-stream events.  ``config.fullDocument`` ensures
+    the complete document is included (not just deltas) so that downstream
+    ``$project`` stages can reference ``$fullDocument.<field>``.
+    """
     return {
         "$source": {
             "connectionName": connection,
             "db": MONGODB_DATABASE,
             "coll": collection,
+            "config": {
+                "fullDocument": "updateLookup",
+            },
         }
     }
 
@@ -164,17 +172,21 @@ def _make_merge_sink(connection: str = "amf_cluster") -> dict:
 
 
 def create_logical_model_processor(connection: str = "amf_cluster") -> dict:
-    """Processor: watches logical models → projects & merges into unified."""
+    """Processor: watches logical models → projects & merges into unified.
+
+    NOTE: ASP $source emits change-stream events — actual document fields
+    live under ``fullDocument``, so every field reference must use that prefix.
+    """
     pipeline = [
         _make_source_stage(COL_LOGICAL_MODELS, connection),
         {
             "$project": {
-                "entity_id": 1,
-                "entity_name": 1,
-                "domain": 1,
-                "description": 1,
-                "logical_attributes": "$attributes",
-                "relationships": 1,
+                "entity_id": "$fullDocument.entity_id",
+                "entity_name": "$fullDocument.entity_name",
+                "domain": "$fullDocument.domain",
+                "description": "$fullDocument.description",
+                "logical_attributes": "$fullDocument.attributes",
+                "relationships": "$fullDocument.relationships",
                 "source_systems": {"$literal": ["enterprise_logical_model"]},
                 # $$NOW is not available in ASP — use the stream
                 # event's watermark timestamp instead.
@@ -188,20 +200,23 @@ def create_logical_model_processor(connection: str = "amf_cluster") -> dict:
 
 def create_physical_schema_processor(connection: str = "amf_cluster") -> dict:
     """Processor: watches physical schemas → nests under 'physical' key.
-    Works with dynamically generated entity_ids from seed_data generator."""
+
+    NOTE: ASP $source emits change-stream events — actual document fields
+    live under ``fullDocument``.
+    """
     pipeline = [
         _make_source_stage(COL_PHYSICAL_SCHEMAS, connection),
         {
             "$project": {
-                "entity_id": 1,
+                "entity_id": "$fullDocument.entity_id",
                 "physical": {
-                    "database": "$database",
-                    "schema_name": "$schema_name",
-                    "table_name": "$table_name",
-                    "columns": "$columns",
-                    "storage_format": "$storage_format",
-                    "partition_key": "$partition_key",
-                    "row_count_approx": "$row_count_approx",
+                    "database": "$fullDocument.database",
+                    "schema_name": "$fullDocument.schema_name",
+                    "table_name": "$fullDocument.table_name",
+                    "columns": "$fullDocument.columns",
+                    "storage_format": "$fullDocument.storage_format",
+                    "partition_key": "$fullDocument.partition_key",
+                    "row_count_approx": "$fullDocument.row_count_approx",
                 },
             }
         },
@@ -211,19 +226,23 @@ def create_physical_schema_processor(connection: str = "amf_cluster") -> dict:
 
 
 def create_governance_tag_processor(connection: str = "amf_cluster") -> dict:
-    """Processor: watches governance tags → nests under 'governance' key."""
+    """Processor: watches governance tags → nests under 'governance' key.
+
+    NOTE: ASP $source emits change-stream events — actual document fields
+    live under ``fullDocument``.
+    """
     pipeline = [
         _make_source_stage(COL_GOVERNANCE_TAGS, connection),
         {
             "$project": {
-                "entity_id": 1,
+                "entity_id": "$fullDocument.entity_id",
                 "governance": {
-                    "classification": "$classification",
-                    "data_steward": "$data_steward",
-                    "retention_policy": "$retention_policy",
-                    "tags": "$tags",
-                    "regulatory_frameworks": "$regulatory_frameworks",
-                    "ptb_status": "$ptb_status",
+                    "classification": "$fullDocument.classification",
+                    "data_steward": "$fullDocument.data_steward",
+                    "retention_policy": "$fullDocument.retention_policy",
+                    "tags": "$fullDocument.tags",
+                    "regulatory_frameworks": "$fullDocument.regulatory_frameworks",
+                    "ptb_status": "$fullDocument.ptb_status",
                 },
             }
         },
