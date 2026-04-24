@@ -176,7 +176,9 @@ def create_logical_model_processor(connection: str = "amf_cluster") -> dict:
                 "logical_attributes": "$attributes",
                 "relationships": 1,
                 "source_systems": {"$literal": ["enterprise_logical_model"]},
-                "consolidated_at": "$$NOW",
+                # $$NOW is not available in ASP — use the stream
+                # event's watermark timestamp instead.
+                "consolidated_at": {"$toDate": "$_ts"},
             }
         },
         _make_merge_sink(connection),
