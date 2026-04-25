@@ -8,7 +8,8 @@ State machine flow:
 
 Integrates:
   • Azure OpenAI as the LLM
-  • MongoDB MCP Server (via langchain-mcp-adapters) for Text-to-MQL
+  • **Real MongoDB MCP Server** (launched as a subprocess via
+    ``langchain-mcp-adapters``) for structured Text-to-MQL queries
   • LangSmith tracing for full observability
 """
 
@@ -16,11 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any, TypedDict
 
 from langchain_core.documents import Document
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_openai import AzureChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
@@ -39,6 +41,8 @@ from search.hybrid_search import (
     get_self_query_retriever,
     get_fulltext_retriever,
 )
+
+log = logging.getLogger(__name__)
 
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
@@ -186,97 +190,174 @@ def retrieve(state: AgentState) -> AgentState:
     return state
 
 
-# ── Node: MCP Query (MongoDB MCP Server — primary NLQ path) ──────────────────
+# ── Node: MCP Query (Real MongoDB MCP Server via langchain-mcp-adapters) ─────
 
-def _run_mcp_query(query: str, schema_context: str = "",
-                   chat_history: list[dict] | None = None) -> list[dict]:
-    """Run a natural language query via the MongoDB MCP Server.
+MCP_SYSTEM_PROMPT = f"""You are a MongoDB query expert with access to MongoDB
+MCP Server tools. Use the available tools to answer the user's question.
 
-    Two-step process:
-      1. Ask the LLM to generate the MCP tool call (find/aggregate) based
-         on the user's question and the collection schema.
-      2. Execute that query directly via PyMongo.
+IMPORTANT: Always target database '{MONGODB_DATABASE}' and collection
+'{COL_UNIFIED_METADATA}' by default. This is the consolidated semantic layer
+with all metadata (logical model, physical schema, governance tags) merged
+into one document per entity.
+
+Only use these source collections if the user EXPLICITLY asks for raw data:
+  - 'source_logical_models'
+  - 'source_physical_schemas'
+  - 'source_governance_tags'
+
+When using the find or aggregate tools:
+  - Exclude 'embedding' and 'embedding_text' fields from projections (too large)
+  - Limit results to 10 documents unless the user asks for more
+  - For aggregate, always pass the database and collection arguments
+
+Use the 'find' tool for simple lookups/filters and 'aggregate' for counts,
+groupings, comparisons, and complex pipelines."""
+
+
+async def _run_mcp_query_async(
+    query: str,
+    schema_context: str = "",
+    chat_history: list[dict] | None = None,
+) -> tuple[list[dict], dict]:
+    """Run a natural language query via the **real** MongoDB MCP Server.
+
+    Launches ``mongodb-mcp-server`` as a stdio subprocess using
+    ``langchain-mcp-adapters`` and lets the LLM decide which MCP tool to
+    call (``find``, ``aggregate``, etc.).  The MCP Server itself handles
+    all MongoDB I/O — no PyMongo calls needed here.
     """
-    llm = get_llm()
+    from langchain_mcp_adapters.client import MultiServerMCPClient
 
-    schema_section = ""
-    if schema_context:
-        schema_section = f"""
-COLLECTION SCHEMA (use this to write accurate field paths and filters):
-{schema_context}
-"""
+    mcp_client = MultiServerMCPClient(
+        {
+            "mongodb": {
+                "command": "npx",
+                "args": ["-y", "mongodb-mcp-server", "--readOnly"],
+                "transport": "stdio",
+                "env": {
+                    "MDB_MCP_CONNECTION_STRING": MONGODB_URI,
+                },
+            }
+        }
+    )
 
-    MCP_TOOL_PROMPT = f"""You are a MongoDB MCP Server tool router.
-Given the user question, generate a JSON object with:
-  - "tool": one of "find" or "aggregate"
-  - "database": "{MONGODB_DATABASE}"
-  - "collection": the target collection name
-  - "filter": a MongoDB filter document (for find) OR
-  - "pipeline": a MongoDB aggregation pipeline (for aggregate)
-  - "projection": optional projection (for find, omit 'embedding' and 'embedding_text')
-  - "limit": max docs to return (default 10)
+    async with mcp_client:
+        tools = mcp_client.get_tools()
 
-IMPORTANT: Always use collection '{COL_UNIFIED_METADATA}' by default. This is the
-consolidated semantic layer with all metadata (logical model, physical schema,
-governance tags) merged into one document per entity.
+        if not tools:
+            raise RuntimeError("MongoDB MCP Server returned no tools")
 
-Only use these source collections if the user EXPLICITLY asks for raw/source data:
-  - 'source_logical_models' — raw logical model definitions
-  - 'source_physical_schemas' — raw physical DB schema info
-  - 'source_governance_tags' — raw governance/classification tags
+        llm = get_llm()
+        llm_with_tools = llm.bind_tools(tools)
 
-{schema_section}
+        # Build system message with optional schema context
+        system_text = MCP_SYSTEM_PROMPT
+        if schema_context:
+            system_text += (
+                f"\n\nCOLLECTION SCHEMA (use for accurate field paths):\n"
+                f"{schema_context}"
+            )
 
-Return ONLY valid JSON, no explanation.
+        messages: list = [SystemMessage(content=system_text)]
+        # Conversation history for follow-up context
+        for turn in (chat_history or []):
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            else:
+                messages.append(AIMessage(content=content))
+        messages.append(HumanMessage(content=query))
 
-User question: {{query}}"""
+        # First LLM call — generates tool calls
+        ai_response = await llm_with_tools.ainvoke(messages)
+        messages.append(ai_response)
 
-    messages = [SystemMessage(content=MCP_TOOL_PROMPT.replace("{{query}}", query))]
-    # Include conversation history for follow-up context
-    for turn in (chat_history or []):
-        role = turn.get("role", "user")
-        content = turn.get("content", "")
-        if role == "user":
-            messages.append(HumanMessage(content=content))
+        tool_call_info: dict = {}
+        results: list[dict] = []
+
+        if ai_response.tool_calls:
+            # Execute each tool call via the MCP server
+            from langchain_core.messages import ToolMessage
+
+            for tc in ai_response.tool_calls:
+                tool_call_info = {
+                    "tool_name": tc["name"],
+                    "tool_args": tc["args"],
+                }
+                # Find the matching LangChain tool
+                matched_tool = next(
+                    (t for t in tools if t.name == tc["name"]), None
+                )
+                if matched_tool is None:
+                    raise RuntimeError(
+                        f"MCP tool '{tc['name']}' not found in server tools"
+                    )
+                # Invoke the tool (MCP server handles MongoDB I/O)
+                tool_result = await matched_tool.ainvoke(tc["args"])
+                messages.append(
+                    ToolMessage(content=str(tool_result), tool_call_id=tc["id"])
+                )
+                # Parse the tool result into structured docs
+                if isinstance(tool_result, str):
+                    try:
+                        parsed = json.loads(tool_result)
+                        if isinstance(parsed, list):
+                            results.extend(parsed)
+                        elif isinstance(parsed, dict):
+                            results.append(parsed)
+                    except (json.JSONDecodeError, TypeError):
+                        results.append({"raw_result": tool_result})
+                elif isinstance(tool_result, list):
+                    results.extend(tool_result)
+                elif isinstance(tool_result, dict):
+                    results.append(tool_result)
+                else:
+                    results.append({"raw_result": str(tool_result)})
         else:
-            from langchain_core.messages import AIMessage
-            messages.append(AIMessage(content=content))
-    messages.append(HumanMessage(content=query))
-    resp = llm.invoke(messages)
-    tool_text = resp.content.strip()
-    # Strip markdown fences
-    if tool_text.startswith("```"):
-        tool_text = "\n".join(tool_text.split("\n")[1:])
-        if tool_text.endswith("```"):
-            tool_text = tool_text[:-3].strip()
+            # LLM chose not to call any tools — extract text answer
+            results.append({"answer": ai_response.content})
+            tool_call_info = {"tool_name": "none", "note": "LLM answered directly"}
 
-    tool_call = json.loads(tool_text)
+        # Sanitise ObjectIds and remove embeddings
+        for doc in results:
+            if isinstance(doc, dict):
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+                doc.pop("embedding", None)
+                doc.pop("embedding_text", None)
 
-    from utils.mongo_client import get_collection
-    col = get_collection(tool_call.get("collection", COL_UNIFIED_METADATA))
+    return results, tool_call_info
 
-    if tool_call.get("tool") == "aggregate":
-        pipeline = tool_call.get("pipeline", [])
-        results = list(col.aggregate(pipeline))
+
+def _run_mcp_query(
+    query: str,
+    schema_context: str = "",
+    chat_history: list[dict] | None = None,
+) -> tuple[list[dict], dict]:
+    """Synchronous wrapper around the async MCP query."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # We're inside an existing event loop (e.g. Streamlit / Jupyter)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(
+                asyncio.run,
+                _run_mcp_query_async(query, schema_context, chat_history),
+            )
+            return future.result(timeout=120)
     else:
-        filt = tool_call.get("filter", {})
-        proj = tool_call.get("projection")
-        limit = tool_call.get("limit", 10)
-        cursor = col.find(filt, proj).limit(limit)
-        results = list(cursor)
-
-    # Sanitise ObjectIds
-    for doc in results:
-        if "_id" in doc:
-            doc["_id"] = str(doc["_id"])
-        # Remove raw embedding vectors from results (too large)
-        doc.pop("embedding", None)
-
-    return results, tool_call
+        return asyncio.run(
+            _run_mcp_query_async(query, schema_context, chat_history)
+        )
 
 
 def mcp_query(state: AgentState) -> AgentState:
-    """Primary NLQ path: try MongoDB MCP Server first."""
+    """Primary NLQ path: query via the real MongoDB MCP Server subprocess."""
     t0 = time.time()
     query = state["query"]
     try:
@@ -299,6 +380,7 @@ def mcp_query(state: AgentState) -> AgentState:
             "latency_ms": latency,
         })
     except Exception as exc:
+        log.warning("MCP query failed, falling back: %s", exc, exc_info=True)
         state["mcp_success"] = False
         _log(state, "mcp_query_fallback", {"error": str(exc)})
         state.setdefault("tool_calls", []).append({

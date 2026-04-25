@@ -321,7 +321,7 @@ flowchart TD
 
     subgraph MCP_Path["MCP-First Path (structured queries)"]
         direction TB
-        MC["MCP Query<br/>LLM generates find/aggregate<br/>Executes via PyMongo"]
+        MC["MCP Query<br/>Real MongoDB MCP Server subprocess<br/>LLM calls find/aggregate tools via MCP protocol"]
         MCPOK{"MCP<br/>Success?"}
         SQ["Self-Query Retriever<br/>LLM-generated metadata filters<br/>domain, PII, classification"]
         MQL["Text-to-MQL<br/>NL to MongoDB Aggregation<br/>Direct pipeline execution"]
