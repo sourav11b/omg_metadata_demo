@@ -242,7 +242,7 @@ async def _run_mcp_query_async(
     )
 
     async with mcp_client:
-        tools = mcp_client.get_tools()
+        tools = await mcp_client.get_tools()
 
         if not tools:
             raise RuntimeError("MongoDB MCP Server returned no tools")
