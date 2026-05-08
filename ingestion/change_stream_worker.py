@@ -28,6 +28,7 @@ from config.settings import (
     COL_UNIFIED_METADATA,
     COL_DLQ,
 )
+from embeddings.voyage_embeddings import generate_embedding
 from utils.mongo_client import get_collection, get_database
 
 
@@ -134,11 +135,10 @@ def consolidate_entity(entity_id: str) -> None:
         }
         unified["source_systems"].append("governance_catalog")
 
-    # Build the text field that Atlas AutoEmbeddings will embed server-side
+    # Generate embedding (client-side via Voyage AI voyage-4-large)
     text = _build_text_for_embedding(unified)
     unified["embedding_text"] = text
-    # No client-side embedding generation — Atlas handles this automatically
-    # via the vector search index configured with voyage-4-large
+    unified["embedding"] = generate_embedding(text)
 
     get_collection(COL_UNIFIED_METADATA).replace_one(
         {"entity_id": entity_id}, unified, upsert=True
