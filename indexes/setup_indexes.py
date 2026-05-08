@@ -104,9 +104,12 @@ def create_vector_search_index() -> dict:
         "database": MONGODB_DATABASE,
         **VECTOR_INDEX_DEF,
     }
+    print(f"[index] Creating vector index with body:\n{json.dumps(body, indent=2)}")
     resp = requests.post(
         _url("/search/indexes"), auth=_AUTH, headers=_HEADERS, json=body,
     )
+    if not resp.ok:
+        print(f"[index] ERROR {resp.status_code}: {resp.text}")
     resp.raise_for_status()
     print(f"[index] Vector search index '{VECTOR_SEARCH_INDEX}' created ✓")
     return resp.json()
