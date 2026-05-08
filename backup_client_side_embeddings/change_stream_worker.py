@@ -1,11 +1,7 @@
 """
 Real-time Change Stream worker that consolidates heterogeneous metadata
-into a single unified document per entity and writes it to the
-unified_metadata collection.
-
-Embedding generation is handled server-side by Atlas AutoEmbeddings —
-the vector search index is configured with the ``voyage-4-large`` model
-and automatically embeds the ``embedding_text`` field.
+into a single unified document per entity, then generates a Voyage AI
+vector embedding and writes it to the unified_metadata collection.
 
 The worker watches *all three* source collections for insert / replace /
 update operations, merges attributes by entity_id, and upserts the
@@ -28,6 +24,7 @@ from config.settings import (
     COL_UNIFIED_METADATA,
     COL_DLQ,
 )
+from embeddings.voyage_embeddings import generate_embedding
 from utils.mongo_client import get_collection, get_database
 
 
@@ -134,11 +131,10 @@ def consolidate_entity(entity_id: str) -> None:
         }
         unified["source_systems"].append("governance_catalog")
 
-    # Build the text field that Atlas AutoEmbeddings will embed server-side
+    # Generate embedding
     text = _build_text_for_embedding(unified)
     unified["embedding_text"] = text
-    # No client-side embedding generation — Atlas handles this automatically
-    # via the vector search index configured with voyage-4-large
+    unified["embedding"] = generate_embedding(text)
 
     get_collection(COL_UNIFIED_METADATA).replace_one(
         {"entity_id": entity_id}, unified, upsert=True

@@ -31,15 +31,13 @@ except (ImportError, ModuleNotFoundError):
             description: str
             type: str
 
-from langchain_mongodb import AutoEmbeddings
-
 from config.settings import (
     COL_UNIFIED_METADATA,
     VECTOR_SEARCH_INDEX,
     FULLTEXT_SEARCH_INDEX,
     EMBEDDING_DIMENSIONS,
-    AUTO_EMBEDDING_MODEL,
 )
+from embeddings.voyage_embeddings import get_voyage_embeddings
 from utils.mongo_client import get_collection
 
 
@@ -70,27 +68,20 @@ DOCUMENT_CONTENT_DESCRIPTION = (
 
 @lru_cache(maxsize=1)
 def get_vector_store() -> MongoDBAtlasVectorSearch:
-    """Return a MongoDBAtlasVectorSearch bound to unified_metadata.
-
-    Uses Atlas AutoEmbeddings — the server generates and manages embeddings
-    automatically via the vector search index configuration.  No client-side
-    Voyage AI API calls are needed.
-    """
+    """Return a MongoDBAtlasVectorSearch bound to unified_metadata."""
     return MongoDBAtlasVectorSearch(
         collection=get_collection(COL_UNIFIED_METADATA),
-        embedding=AutoEmbeddings(model=AUTO_EMBEDDING_MODEL),
+        embedding=get_voyage_embeddings(),
         index_name=VECTOR_SEARCH_INDEX,
         text_key="embedding_text",
-        embedding_key=None,       # Atlas manages the embedding field
-        relevance_score_fn=None,  # inferred by Atlas
-        dimensions=-1,            # inferred by Atlas
+        embedding_key="embedding",
     )
 
 
 # ── 0. Pure Vector Retriever (semantic similarity only) ──────────────────────
 
 def get_vector_retriever(k: int = 5):
-    """Return a pure vector search retriever (server-side AutoEmbeddings)."""
+    """Return a pure vector search retriever (cosine similarity via Voyage AI)."""
     return get_vector_store().as_retriever(search_kwargs={"k": k})
 
 

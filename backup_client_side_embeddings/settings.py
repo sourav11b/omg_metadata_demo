@@ -30,10 +30,6 @@ ATLAS_API_BASE = "https://cloud.mongodb.com/api/atlas/v2"
 VOYAGE_API_KEY: str = os.getenv("VOYAGE_API_KEY", "")
 VOYAGE_MODEL: str = os.getenv("VOYAGE_MODEL", "voyage-3.5")
 
-# ── Auto Embeddings (server-side, managed by Atlas) ──────────────────────────
-# When set, Atlas generates embeddings automatically via the vector search index.
-AUTO_EMBEDDING_MODEL: str = os.getenv("AUTO_EMBEDDING_MODEL", "voyage-4-large")
-
 # ── Azure OpenAI (LLM) ────────────────────────────────────────────────────────
 AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")
@@ -48,5 +44,5 @@ LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "amf-agent-demo")
 VECTOR_SEARCH_INDEX = "vector_index"
 FULLTEXT_SEARCH_INDEX = "fulltext_index"
 
-# Embedding dimensions (Voyage 3.5 = 1024, voyage-4-large = 1024)
+# Embedding dimensions (Voyage 3.5 = 1024)
 EMBEDDING_DIMENSIONS = 1024

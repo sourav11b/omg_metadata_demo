@@ -18,7 +18,6 @@ from config.settings import (
     VECTOR_SEARCH_INDEX,
     FULLTEXT_SEARCH_INDEX,
     EMBEDDING_DIMENSIONS,
-    AUTO_EMBEDDING_MODEL,
 )
 from utils.atlas_auth import get_atlas_auth
 
@@ -41,12 +40,10 @@ VECTOR_INDEX_DEF = {
     "definition": {
         "fields": [
             {
-                "type": "autoEmbed",
-                "path": "embedding_text",
-                "model": AUTO_EMBEDDING_MODEL,
+                "type": "vector",
+                "path": "embedding",
                 "numDimensions": EMBEDDING_DIMENSIONS,
                 "similarity": "cosine",
-                "modality": "text",
             },
             {"type": "filter", "path": "entity_name"},
             {"type": "filter", "path": "domain"},
