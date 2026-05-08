@@ -176,9 +176,6 @@ def create_logical_model_processor(connection: str = "amf_cluster") -> dict:
 
     NOTE: ASP $source emits change-stream events — actual document fields
     live under ``fullDocument``, so every field reference must use that prefix.
-
-    Builds an ``embedding_text`` field so that Atlas AutoEmbeddings can
-    generate a vector for this document.
     """
     pipeline = [
         _make_source_stage(COL_LOGICAL_MODELS, connection),
@@ -195,15 +192,6 @@ def create_logical_model_processor(connection: str = "amf_cluster") -> dict:
                 # $$NOW is not available in ASP — use the stream
                 # event's watermark timestamp instead.
                 "consolidated_at": {"$toDate": "$_ts"},
-                # Build embedding_text for Atlas AutoEmbeddings
-                "embedding_text": {
-                    "$concat": [
-                        "Entity: ", {"$ifNull": ["$fullDocument.entity_name", ""]},
-                        " (", {"$ifNull": ["$fullDocument.entity_id", ""]}, ")",
-                        "\nDomain: ", {"$ifNull": ["$fullDocument.domain", ""]},
-                        "\nDescription: ", {"$ifNull": ["$fullDocument.description", ""]},
-                    ]
-                },
             }
         },
         _make_merge_sink(connection),
@@ -216,8 +204,6 @@ def create_physical_schema_processor(connection: str = "amf_cluster") -> dict:
 
     NOTE: ASP $source emits change-stream events — actual document fields
     live under ``fullDocument``.
-
-    Builds a partial ``embedding_text`` with database/schema/table info.
     """
     pipeline = [
         _make_source_stage(COL_PHYSICAL_SCHEMAS, connection),
@@ -234,16 +220,6 @@ def create_physical_schema_processor(connection: str = "amf_cluster") -> dict:
                     "partition_key": "$fullDocument.partition_key",
                     "row_count_approx": "$fullDocument.row_count_approx",
                 },
-                # Build embedding_text for Atlas AutoEmbeddings
-                "embedding_text": {
-                    "$concat": [
-                        "Database: ",
-                        {"$ifNull": ["$fullDocument.database", ""]}, ".",
-                        {"$ifNull": ["$fullDocument.schema_name", ""]}, ".",
-                        {"$ifNull": ["$fullDocument.table_name", ""]},
-                        "\nStorage: ", {"$ifNull": ["$fullDocument.storage_format", ""]},
-                    ]
-                },
             }
         },
         _make_merge_sink(connection),
@@ -256,8 +232,6 @@ def create_governance_tag_processor(connection: str = "amf_cluster") -> dict:
 
     NOTE: ASP $source emits change-stream events — actual document fields
     live under ``fullDocument``.
-
-    Builds a partial ``embedding_text`` with classification and governance info.
     """
     pipeline = [
         _make_source_stage(COL_GOVERNANCE_TAGS, connection),
@@ -272,14 +246,6 @@ def create_governance_tag_processor(connection: str = "amf_cluster") -> dict:
                     "tags": "$fullDocument.tags",
                     "regulatory_frameworks": "$fullDocument.regulatory_frameworks",
                     "ptb_status": "$fullDocument.ptb_status",
-                },
-                # Build embedding_text for Atlas AutoEmbeddings
-                "embedding_text": {
-                    "$concat": [
-                        "Classification: ", {"$ifNull": ["$fullDocument.classification", ""]},
-                        "\nPTB Status: ", {"$ifNull": ["$fullDocument.ptb_status", ""]},
-                        "\nData Steward: ", {"$ifNull": ["$fullDocument.data_steward", ""]},
-                    ]
                 },
             }
         },
