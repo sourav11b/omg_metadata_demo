@@ -392,6 +392,28 @@ with st.sidebar:
             f"{stats['updated']['governance_tags']} GT"
         )
 
+    if st.button("🗑️ Clean All & Reseed", use_container_width=True, type="secondary"):
+        from ingestion.ingest import clean_all_data, run_ingestion
+        with st.spinner("Cleaning all collections …"):
+            deleted = clean_all_data()
+        total_deleted = sum(deleted.values())
+        with st.spinner(f"Re-seeding {int(ingest_count)} entities …"):
+            stats = run_ingestion(new_count=int(ingest_count), update_count=0)
+        st.success(
+            f"🗑️ Cleaned {total_deleted} docs  ·  "
+            f"🌱 Seeded: {stats['new']['logical_models']} LM, "
+            f"{stats['new']['physical_schemas']} PS, "
+            f"{stats['new']['governance_tags']} GT"
+        )
+        # Reset session state since conversation history was cleared
+        st.session_state.messages = []
+        st.session_state.session_id = str(uuid.uuid4())
+        from utils.schema_inspector import inspect_collection
+        try:
+            st.session_state.schema_context = inspect_collection()
+        except Exception:
+            st.session_state.schema_context = ""
+
     st.divider()
 
     # ── Consolidation (background) ─────────────────────────────────────────

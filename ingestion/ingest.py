@@ -18,6 +18,10 @@ from config.settings import (
     COL_LOGICAL_MODELS,
     COL_PHYSICAL_SCHEMAS,
     COL_GOVERNANCE_TAGS,
+    COL_UNIFIED_METADATA,
+    COL_DLQ,
+    COL_CONVERSATION_HISTORY,
+    COL_SESSION_MEMORY,
 )
 from data.seed_data import generate_batch, generate_updates
 from utils.mongo_client import get_collection
@@ -96,6 +100,29 @@ def ingest_physical_schemas() -> int:
 
 def ingest_governance_tags() -> int:
     return 0  # handled by run_ingestion
+
+
+def clean_all_data() -> dict:
+    """Drop all documents from source, unified, session, and DLQ collections.
+
+    Returns a dict with the number of deleted documents per collection.
+    """
+    collections = [
+        COL_LOGICAL_MODELS,
+        COL_PHYSICAL_SCHEMAS,
+        COL_GOVERNANCE_TAGS,
+        COL_UNIFIED_METADATA,
+        COL_DLQ,
+        COL_CONVERSATION_HISTORY,
+        COL_SESSION_MEMORY,
+    ]
+    deleted: dict[str, int] = {}
+    for col_name in collections:
+        col = get_collection(col_name)
+        result = col.delete_many({})
+        deleted[col_name] = result.deleted_count
+        print(f"[clean] {col_name}: deleted {result.deleted_count} documents")
+    return deleted
 
 
 def run_full_ingestion() -> None:
