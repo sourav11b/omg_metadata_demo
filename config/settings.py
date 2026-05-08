@@ -47,6 +47,7 @@ LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "amf-agent-demo")
 # Search index names
 VECTOR_SEARCH_INDEX = "vector_index"
 FULLTEXT_SEARCH_INDEX = "fulltext_index"
+AUTO_EMBEDDING_INDEX = "auto_embedding_index"
 
 # Embedding dimensions (Voyage 3.5 = 1024, voyage-4-large = 1024)
 EMBEDDING_DIMENSIONS = 1024

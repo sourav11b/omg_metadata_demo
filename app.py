@@ -33,6 +33,8 @@ from config.settings import (
     MONGODB_DATABASE,
     VECTOR_SEARCH_INDEX,
     FULLTEXT_SEARCH_INDEX,
+    AUTO_EMBEDDING_INDEX,
+    AUTO_EMBEDDING_MODEL,
     ATLAS_STREAM_INSTANCE,
     ATLAS_PROJECT_ID,
 )
@@ -585,60 +587,185 @@ with st.sidebar:
             st.session_state["prefill"] = s
 
 
-# ── Chat history ──────────────────────────────────────────────────────────────
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "trace_data" in msg:
-            _render_trace(msg["trace_data"])
+# ── Tabs ─────────────────────────────────────────────────────────────────────
+tab_chat, tab_autoembed = st.tabs(["💬 AMF Semantic Chat", "🔮 Server-side AutoEmbeddings"])
 
-# ── Chat input ────────────────────────────────────────────────────────────────
-prefill = st.session_state.pop("prefill", "")
-user_input = st.chat_input("Ask about your metadata fabric …") or prefill
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 1 – Main RAG Chat
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with tab_chat:
+    # ── Chat history ──────────────────────────────────────────────────────
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if "trace_data" in msg:
+                _render_trace(msg["trace_data"])
 
-if user_input:
-    # Save & display user message
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    _save_message(st.session_state.session_id, "user", user_input)
+    # ── Chat input ────────────────────────────────────────────────────────
+    prefill = st.session_state.pop("prefill", "")
+    user_input = st.chat_input("Ask about your metadata fabric …") or prefill
 
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    if user_input:
+        # Save & display user message
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        _save_message(st.session_state.session_id, "user", user_input)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Reasoning …"):
-            # Build chat history from session messages (role + content only, no trace)
-            history = [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ]
-            result = ask(
-                user_input,
-                schema_context=st.session_state.get("schema_context", ""),
-                chat_history=history,
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Reasoning …"):
+                history = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.messages
+                ]
+                result = ask(
+                    user_input,
+                    schema_context=st.session_state.get("schema_context", ""),
+                    chat_history=history,
+                )
+
+            answer = result.get("answer", "No answer generated.")
+            st.markdown(answer)
+
+            trace_data = {
+                "intent": result.get("intent", ""),
+                "tool_calls": result.get("tool_calls", []),
+                "trace": result.get("trace", []),
+                "retrieved_docs": result.get("retrieved_docs", []),
+                "latency_ms": result.get("latency_ms", 0),
+            }
+            _render_trace(trace_data)
+
+            _save_message(st.session_state.session_id, "assistant", answer, trace_data)
+            _save_semantic_memory(
+                st.session_state.session_id, user_input, answer,
+                result.get("intent", ""),
             )
 
-        answer = result.get("answer", "No answer generated.")
-        st.markdown(answer)
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": answer,
+                "trace_data": trace_data,
+            })
 
-        # Build trace data
-        trace_data = {
-            "intent": result.get("intent", ""),
-            "tool_calls": result.get("tool_calls", []),
-            "trace": result.get("trace", []),
-            "retrieved_docs": result.get("retrieved_docs", []),
-            "latency_ms": result.get("latency_ms", 0),
-        }
-        _render_trace(trace_data)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 2 – Server-side AutoEmbeddings Demo
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with tab_autoembed:
+    st.subheader("🔮 Atlas AutoEmbeddings — Server-side Vector Search")
+    st.markdown(f"""
+This tab demonstrates **Atlas AutoEmbeddings** — a feature where MongoDB Atlas
+**generates embeddings server-side** using **{AUTO_EMBEDDING_MODEL}**, eliminating the
+need for client-side embedding generation.
 
-        # Persist to MongoDB
-        _save_message(st.session_state.session_id, "assistant", answer, trace_data)
-        _save_semantic_memory(
-            st.session_state.session_id, user_input, answer,
-            result.get("intent", ""),
-        )
+| Aspect | Main Chat (Tab 1) | AutoEmbeddings (This Tab) |
+|---|---|---|
+| **Embedding generation** | Client-side (Voyage AI SDK) | Server-side (Atlas manages it) |
+| **Index type** | `vector` (pre-computed vectors) | `autoEmbed` (Atlas auto-generates) |
+| **Query parameter** | `queryVector` (send vector) | `queryString` (send raw text) |
+| **Framework** | LangChain + LangGraph | Raw PyMongo aggregation |
 
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": answer,
-            "trace_data": trace_data,
-        })
+Enter a natural-language query below. Atlas will embed it server-side and
+perform vector search — **no embedding API call from this application**.
+    """)
+
+    auto_query = st.text_input(
+        "🔎 Search query (Atlas embeds this server-side):",
+        placeholder="e.g. customer identity verification",
+        key="auto_embed_query",
+    )
+    auto_k = st.slider("Number of results", 1, 20, 5, key="auto_embed_k")
+
+    if st.button("🚀 Run AutoEmbedding Search", use_container_width=True, type="primary"):
+        if not auto_query.strip():
+            st.warning("Please enter a query.")
+        else:
+            with st.spinner("Running server-side vector search via PyMongo …"):
+                t0 = time.time()
+                try:
+                    col = get_collection(COL_UNIFIED_METADATA)
+                    pipeline = [
+                        {
+                            "$vectorSearch": {
+                                "index": AUTO_EMBEDDING_INDEX,
+                                "queryString": auto_query.strip(),
+                                "path": "embedding_text",
+                                "numCandidates": auto_k * 10,
+                                "limit": auto_k,
+                            }
+                        },
+                        {
+                            "$project": {
+                                "_id": 0,
+                                "entity_id": 1,
+                                "entity_name": 1,
+                                "domain": 1,
+                                "description": 1,
+                                "embedding_text": 1,
+                                "governance.classification": 1,
+                                "governance.ptb_status": 1,
+                                "governance.data_steward": 1,
+                                "governance.tags": 1,
+                                "score": {"$meta": "vectorSearchScore"},
+                            }
+                        },
+                    ]
+                    results = list(col.aggregate(pipeline))
+                    elapsed = (time.time() - t0) * 1000
+
+                    st.success(f"✅ Found {len(results)} result(s) in {elapsed:.0f} ms")
+
+                    # Show the raw pipeline
+                    with st.expander("📋 Raw PyMongo Aggregation Pipeline", expanded=False):
+                        st.code(json.dumps(pipeline, indent=2, default=str), language="json")
+                        st.caption(
+                            "Notice: **queryString** is used instead of queryVector — "
+                            "Atlas embeds the query text server-side using "
+                            f"**{AUTO_EMBEDDING_MODEL}**."
+                        )
+
+                    # Render results
+                    for i, doc in enumerate(results, 1):
+                        score = doc.pop("score", None)
+                        entity = doc.get("entity_name", doc.get("entity_id", "?"))
+                        score_str = f" — score: {score:.4f}" if score else ""
+                        with st.expander(f"**{i}. {entity}**{score_str}", expanded=(i <= 3)):
+                            c1, c2, c3 = st.columns(3)
+                            with c1:
+                                st.metric("Domain", doc.get("domain", "—"))
+                            with c2:
+                                gov = doc.get("governance", {})
+                                st.metric("Classification", gov.get("classification", "—"))
+                            with c3:
+                                st.metric("PTB Status", gov.get("ptb_status", "—"))
+
+                            if doc.get("description"):
+                                st.markdown(f"**Description:** {doc['description']}")
+
+                            gov = doc.get("governance", {})
+                            tags = gov.get("tags", [])
+                            if tags:
+                                pii = [t for t in tags if t.get("tag") == "PII"]
+                                sid = [t for t in tags if t.get("tag") == "SID"]
+                                if pii:
+                                    st.warning(f"⚠️ PII: {', '.join(t['field'] for t in pii)}")
+                                if sid:
+                                    st.info(f"🔑 SID: {', '.join(t['field'] for t in sid)}")
+
+                            st.json(doc)
+
+                    if not results:
+                        st.info(
+                            "No results found. Make sure the `auto_embedding_index` "
+                            "is READY and documents have an `embedding_text` field.\n\n"
+                            "Run: `python -m indexes.setup_indexes --recreate`"
+                        )
+
+                except Exception as exc:
+                    elapsed = (time.time() - t0) * 1000
+                    st.error(f"❌ AutoEmbedding search failed ({elapsed:.0f} ms): {exc}")
+                    st.caption(
+                        "If you see an 'index not found' error, create the autoEmbed "
+                        "index: `python -m indexes.setup_indexes --recreate`"
+                    )

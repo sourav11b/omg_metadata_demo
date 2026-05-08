@@ -19,6 +19,8 @@ from config.settings import (
     COL_UNIFIED_METADATA,
     VECTOR_SEARCH_INDEX,
     FULLTEXT_SEARCH_INDEX,
+    AUTO_EMBEDDING_INDEX,
+    AUTO_EMBEDDING_MODEL,
     EMBEDDING_DIMENSIONS,
 )
 from utils.atlas_auth import get_atlas_auth
@@ -54,6 +56,28 @@ VECTOR_INDEX_DEF = {
             {"type": "filter", "path": "governance.tags.tag"},
             {"type": "filter", "path": "governance.tags.sensitivity"},
             {"type": "filter", "path": "governance.regulatory_frameworks"},
+        ]
+    },
+}
+
+
+# ── AutoEmbed Vector Search Index (server-side embeddings demo) ───────────────
+
+AUTO_EMBED_INDEX_DEF = {
+    "name": AUTO_EMBEDDING_INDEX,
+    "type": "vectorSearch",
+    "definition": {
+        "fields": [
+            {
+                "type": "autoEmbed",
+                "path": "embedding_text",
+                "model": AUTO_EMBEDDING_MODEL,
+                "numDimensions": EMBEDDING_DIMENSIONS,
+                "similarity": "cosine",
+                "modality": "text",
+            },
+            {"type": "filter", "path": "entity_name"},
+            {"type": "filter", "path": "domain"},
         ]
     },
 }
@@ -109,6 +133,24 @@ def create_vector_search_index() -> dict:
         print(f"[index] ERROR {resp.status_code}: {resp.text}")
     resp.raise_for_status()
     print(f"[index] Vector search index '{VECTOR_SEARCH_INDEX}' created ✓")
+    return resp.json()
+
+
+def create_auto_embed_index() -> dict:
+    """Create the autoEmbed vector search index via Atlas Admin API."""
+    body = {
+        "collectionName": COL_UNIFIED_METADATA,
+        "database": MONGODB_DATABASE,
+        **AUTO_EMBED_INDEX_DEF,
+    }
+    print(f"[index] Creating autoEmbed index with body:\n{json.dumps(body, indent=2)}")
+    resp = requests.post(
+        _url("/search/indexes"), auth=_AUTH, headers=_HEADERS, json=body,
+    )
+    if not resp.ok:
+        print(f"[index] ERROR {resp.status_code}: {resp.text}")
+    resp.raise_for_status()
+    print(f"[index] AutoEmbed index '{AUTO_EMBEDDING_INDEX}' created ✓")
     return resp.json()
 
 
@@ -172,7 +214,7 @@ def delete_index_by_name(index_name: str) -> bool:
 def delete_all_indexes() -> None:
     """Delete all search indexes on the unified_metadata collection."""
     print("[index] Deleting existing indexes …")
-    for name in (VECTOR_SEARCH_INDEX, FULLTEXT_SEARCH_INDEX):
+    for name in (VECTOR_SEARCH_INDEX, FULLTEXT_SEARCH_INDEX, AUTO_EMBEDDING_INDEX):
         delete_index_by_name(name)
 
 
@@ -187,18 +229,20 @@ def recreate_all_indexes(wait_seconds: int = 10) -> None:
     print()
     create_vector_search_index()
     create_fulltext_search_index()
+    create_auto_embed_index()
     print("\nVerifying …")
     list_indexes()
     print("=" * 60)
 
 
 def setup_all_indexes() -> None:
-    """Create both search indexes (without deleting first)."""
+    """Create all search indexes (without deleting first)."""
     print("=" * 60)
     print("AMF-Agent  ·  Atlas Search Index Setup")
     print("=" * 60)
     create_vector_search_index()
     create_fulltext_search_index()
+    create_auto_embed_index()
     print("\nVerifying …")
     list_indexes()
     print("=" * 60)
