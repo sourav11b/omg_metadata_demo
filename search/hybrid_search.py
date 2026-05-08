@@ -31,8 +31,6 @@ except (ImportError, ModuleNotFoundError):
             description: str
             type: str
 
-from langchain_mongodb import AutoEmbeddings
-
 from config.settings import (
     COL_UNIFIED_METADATA,
     VECTOR_SEARCH_INDEX,
@@ -40,6 +38,7 @@ from config.settings import (
     EMBEDDING_DIMENSIONS,
     AUTO_EMBEDDING_MODEL,
 )
+from embeddings.voyage_embeddings import get_voyage_embeddings
 from utils.mongo_client import get_collection
 
 
@@ -72,18 +71,15 @@ DOCUMENT_CONTENT_DESCRIPTION = (
 def get_vector_store() -> MongoDBAtlasVectorSearch:
     """Return a MongoDBAtlasVectorSearch bound to unified_metadata.
 
-    Uses Atlas AutoEmbeddings — the server generates and manages embeddings
-    automatically via the vector search index configuration.  No client-side
-    Voyage AI API calls are needed.
+    Document embeddings are generated server-side by Atlas AutoEmbeddings
+    (voyage-4-large) via the autoEmbed vector index.  Query-time embeddings
+    use the same model via the Voyage AI Python client so vectors match.
     """
     return MongoDBAtlasVectorSearch(
         collection=get_collection(COL_UNIFIED_METADATA),
-        embedding=AutoEmbeddings(model=AUTO_EMBEDDING_MODEL),
+        embedding=get_voyage_embeddings(),
         index_name=VECTOR_SEARCH_INDEX,
         text_key="embedding_text",
-        embedding_key=None,       # Atlas manages the embedding field
-        relevance_score_fn=None,  # inferred by Atlas
-        dimensions=-1,            # inferred by Atlas
     )
 
 
