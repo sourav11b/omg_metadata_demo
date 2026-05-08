@@ -7,6 +7,8 @@ Usage:
 """
 
 import json
+import time
+
 import requests
 
 from config.settings import (
@@ -138,8 +140,60 @@ def list_indexes() -> list[dict]:
     return indexes
 
 
+def delete_index_by_name(index_name: str) -> bool:
+    """Delete a search index by name. Returns True if deleted, False if not found."""
+    indexes = list_indexes()
+    target = None
+    for idx in indexes:
+        if idx.get("name") == index_name:
+            target = idx
+            break
+
+    if not target:
+        print(f"[index] Index '{index_name}' not found — nothing to delete")
+        return False
+
+    index_id = target.get("indexID") or target.get("id")
+    if not index_id:
+        print(f"[index] Could not determine ID for index '{index_name}'")
+        return False
+
+    resp = requests.delete(
+        _url(f"/search/indexes/{index_id}"),
+        auth=_AUTH, headers=_HEADERS,
+    )
+    if resp.status_code == 204 or resp.status_code == 202:
+        print(f"[index] Index '{index_name}' (id={index_id}) deleted ✓")
+        return True
+    resp.raise_for_status()
+    return True
+
+
+def delete_all_indexes() -> None:
+    """Delete all search indexes on the unified_metadata collection."""
+    print("[index] Deleting existing indexes …")
+    for name in (VECTOR_SEARCH_INDEX, FULLTEXT_SEARCH_INDEX):
+        delete_index_by_name(name)
+
+
+def recreate_all_indexes(wait_seconds: int = 10) -> None:
+    """Delete existing indexes, wait, then recreate them."""
+    print("=" * 60)
+    print("AMF-Agent  ·  Atlas Search Index Recreate")
+    print("=" * 60)
+    delete_all_indexes()
+    print(f"\n⏳ Waiting {wait_seconds}s for deletions to propagate …")
+    time.sleep(wait_seconds)
+    print()
+    create_vector_search_index()
+    create_fulltext_search_index()
+    print("\nVerifying …")
+    list_indexes()
+    print("=" * 60)
+
+
 def setup_all_indexes() -> None:
-    """Create both search indexes."""
+    """Create both search indexes (without deleting first)."""
     print("=" * 60)
     print("AMF-Agent  ·  Atlas Search Index Setup")
     print("=" * 60)
@@ -151,4 +205,12 @@ def setup_all_indexes() -> None:
 
 
 if __name__ == "__main__":
-    setup_all_indexes()
+    import sys
+    if "--recreate" in sys.argv:
+        recreate_all_indexes()
+    elif "--delete" in sys.argv:
+        delete_all_indexes()
+    elif "--list" in sys.argv:
+        list_indexes()
+    else:
+        setup_all_indexes()
