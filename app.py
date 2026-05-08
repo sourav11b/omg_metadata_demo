@@ -663,7 +663,7 @@ need for client-side embedding generation.
 |---|---|---|
 | **Embedding generation** | Client-side (Voyage AI SDK) | Server-side (Atlas manages it) |
 | **Index type** | `vector` (pre-computed vectors) | `autoEmbed` (Atlas auto-generates) |
-| **Query parameter** | `queryVector` (send vector) | `queryString` (send raw text) |
+| **Query parameter** | `queryVector` (send vector) | `query` (send raw text) |
 | **Framework** | LangChain + LangGraph | Raw PyMongo aggregation |
 
 Enter a natural-language query below. Atlas will embed it server-side and
@@ -689,7 +689,7 @@ perform vector search — **no embedding API call from this application**.
                         {
                             "$vectorSearch": {
                                 "index": AUTO_EMBEDDING_INDEX,
-                                "queryString": auto_query.strip(),
+                                "query": auto_query.strip(),
                                 "path": "embedding_text",
                                 "numCandidates": auto_k * 10,
                                 "limit": auto_k,
@@ -720,7 +720,7 @@ perform vector search — **no embedding API call from this application**.
                     with st.expander("📋 Raw PyMongo Aggregation Pipeline", expanded=False):
                         st.code(json.dumps(pipeline, indent=2, default=str), language="json")
                         st.caption(
-                            "Notice: **queryString** is used instead of queryVector — "
+                            "Notice: **query** is used instead of queryVector — "
                             "Atlas embeds the query text server-side using "
                             f"**{AUTO_EMBEDDING_MODEL}**."
                         )
