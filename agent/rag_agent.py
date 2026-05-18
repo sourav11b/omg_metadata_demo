@@ -331,15 +331,15 @@ async def _run_mcp_query_async(
         else:
             raise
 
-            # Sanitise ObjectIds and remove embeddings
-            for doc in results:
-                if isinstance(doc, dict):
-                    if "_id" in doc:
-                        doc["_id"] = str(doc["_id"])
-                    doc.pop("embedding", None)
-                    doc.pop("embedding_text", None)
+    # Sanitise ObjectIds and remove embeddings
+    for doc in results:
+        if isinstance(doc, dict):
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            doc.pop("embedding", None)
+            doc.pop("embedding_text", None)
 
-            return results, tool_call_info
+    return results, tool_call_info
 
 
 def _run_mcp_query(
