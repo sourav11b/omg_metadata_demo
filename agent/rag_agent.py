@@ -222,124 +222,113 @@ async def _run_mcp_query_async(
 ) -> tuple[list[dict], dict]:
     """Run a natural language query via the **real** MongoDB MCP Server.
 
-    Launches ``mongodb-mcp-server`` as a stdio subprocess using
-    ``langchain-mcp-adapters`` and lets the LLM decide which MCP tool to
-    call (``find``, ``aggregate``, etc.).  The MCP Server itself handles
-    all MongoDB I/O — no PyMongo calls needed here.
+    Launches ``mongodb-mcp-server`` as a stdio subprocess using the raw
+    ``mcp`` Python client and ``langchain-mcp-adapters`` tool loader.
+    The LLM decides which MCP tool to call (``find``, ``aggregate``, etc.).
     """
-    from langchain_mcp_adapters.client import MultiServerMCPClient
+    from mcp.client.stdio import stdio_client, StdioServerParameters
+    from mcp.client.session import ClientSession
+    from langchain_mcp_adapters.tools import load_mcp_tools
     import shutil
 
-    # Build env that includes PATH/HOME so the subprocess can find node/npx.
-    # When ``env`` is passed to MultiServerMCPClient it **replaces** the
-    # process environment, so we must forward the essentials.
+    # Build env — stdio_client replaces the process env, so forward essentials.
     _mcp_env: dict[str, str] = {
         "MDB_MCP_CONNECTION_STRING": MONGODB_URI,
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", "/tmp"),
     }
-    # Prefer the nvm-managed npx if available (Node 22+).
     _npx_cmd = shutil.which("npx") or "npx"
 
-    mcp_client = MultiServerMCPClient(
-        {
-            "mongodb": {
-                "command": _npx_cmd,
-                "args": ["-y", "mongodb-mcp-server@latest", "--readOnly"],
-                "transport": "stdio",
-                "env": _mcp_env,
-            }
-        }
+    params = StdioServerParameters(
+        command=_npx_cmd,
+        args=["-y", "mongodb-mcp-server@latest", "--readOnly"],
+        env=_mcp_env,
     )
 
-    # langchain-mcp-adapters 0.1.0+ removed context manager support.
-    # Call get_tools() directly — sessions are created on demand.
-    tools = await mcp_client.get_tools()
+    async with stdio_client(params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            tools = await load_mcp_tools(session)
 
-    if not tools:
-        raise RuntimeError("MongoDB MCP Server returned no tools")
+            if not tools:
+                raise RuntimeError("MongoDB MCP Server returned no tools")
 
-    llm = get_llm()
-    llm_with_tools = llm.bind_tools(tools)
+            llm = get_llm()
+            llm_with_tools = llm.bind_tools(tools)
 
-    # Build system message with optional schema context
-    system_text = MCP_SYSTEM_PROMPT
-    if schema_context:
-        system_text += (
-            f"\n\nCOLLECTION SCHEMA (use for accurate field paths):\n"
-            f"{schema_context}"
-        )
-
-    messages: list = [SystemMessage(content=system_text)]
-    # Conversation history for follow-up context
-    for turn in (chat_history or []):
-        role = turn.get("role", "user")
-        content = turn.get("content", "")
-        if role == "user":
-            messages.append(HumanMessage(content=content))
-        else:
-            messages.append(AIMessage(content=content))
-    messages.append(HumanMessage(content=query))
-
-    # First LLM call — generates tool calls
-    ai_response = await llm_with_tools.ainvoke(messages)
-    messages.append(ai_response)
-
-    tool_call_info: dict = {}
-    results: list[dict] = []
-
-    if ai_response.tool_calls:
-        # Execute each tool call via the MCP server
-        from langchain_core.messages import ToolMessage
-
-        for tc in ai_response.tool_calls:
-            tool_call_info = {
-                "tool_name": tc["name"],
-                "tool_args": tc["args"],
-            }
-            # Find the matching LangChain tool
-            matched_tool = next(
-                (t for t in tools if t.name == tc["name"]), None
-            )
-            if matched_tool is None:
-                raise RuntimeError(
-                    f"MCP tool '{tc['name']}' not found in server tools"
+            # Build system message with optional schema context
+            system_text = MCP_SYSTEM_PROMPT
+            if schema_context:
+                system_text += (
+                    f"\n\nCOLLECTION SCHEMA (use for accurate field paths):\n"
+                    f"{schema_context}"
                 )
-            # Invoke the tool (MCP server handles MongoDB I/O)
-            tool_result = await matched_tool.ainvoke(tc["args"])
-            messages.append(
-                ToolMessage(content=str(tool_result), tool_call_id=tc["id"])
-            )
-            # Parse the tool result into structured docs
-            if isinstance(tool_result, str):
-                try:
-                    parsed = json.loads(tool_result)
-                    if isinstance(parsed, list):
-                        results.extend(parsed)
-                    elif isinstance(parsed, dict):
-                        results.append(parsed)
-                except (json.JSONDecodeError, TypeError):
-                    results.append({"raw_result": tool_result})
-            elif isinstance(tool_result, list):
-                results.extend(tool_result)
-            elif isinstance(tool_result, dict):
-                results.append(tool_result)
+
+            messages: list = [SystemMessage(content=system_text)]
+            for turn in (chat_history or []):
+                role = turn.get("role", "user")
+                content = turn.get("content", "")
+                if role == "user":
+                    messages.append(HumanMessage(content=content))
+                else:
+                    messages.append(AIMessage(content=content))
+            messages.append(HumanMessage(content=query))
+
+            # First LLM call — generates tool calls
+            ai_response = await llm_with_tools.ainvoke(messages)
+            messages.append(ai_response)
+
+            tool_call_info: dict = {}
+            results: list[dict] = []
+
+            if ai_response.tool_calls:
+                from langchain_core.messages import ToolMessage
+
+                for tc in ai_response.tool_calls:
+                    tool_call_info = {
+                        "tool_name": tc["name"],
+                        "tool_args": tc["args"],
+                    }
+                    matched_tool = next(
+                        (t for t in tools if t.name == tc["name"]), None
+                    )
+                    if matched_tool is None:
+                        raise RuntimeError(
+                            f"MCP tool '{tc['name']}' not found in server tools"
+                        )
+                    tool_result = await matched_tool.ainvoke(tc["args"])
+                    messages.append(
+                        ToolMessage(content=str(tool_result), tool_call_id=tc["id"])
+                    )
+                    if isinstance(tool_result, str):
+                        try:
+                            parsed = json.loads(tool_result)
+                            if isinstance(parsed, list):
+                                results.extend(parsed)
+                            elif isinstance(parsed, dict):
+                                results.append(parsed)
+                        except (json.JSONDecodeError, TypeError):
+                            results.append({"raw_result": tool_result})
+                    elif isinstance(tool_result, list):
+                        results.extend(tool_result)
+                    elif isinstance(tool_result, dict):
+                        results.append(tool_result)
+                    else:
+                        results.append({"raw_result": str(tool_result)})
             else:
-                results.append({"raw_result": str(tool_result)})
-    else:
-        # LLM chose not to call any tools — extract text answer
-        results.append({"answer": ai_response.content})
-        tool_call_info = {"tool_name": "none", "note": "LLM answered directly"}
+                # LLM chose not to call any tools — extract text answer
+                results.append({"answer": ai_response.content})
+                tool_call_info = {"tool_name": "none", "note": "LLM answered directly"}
 
-    # Sanitise ObjectIds and remove embeddings
-    for doc in results:
-        if isinstance(doc, dict):
-            if "_id" in doc:
-                doc["_id"] = str(doc["_id"])
-            doc.pop("embedding", None)
-            doc.pop("embedding_text", None)
+            # Sanitise ObjectIds and remove embeddings
+            for doc in results:
+                if isinstance(doc, dict):
+                    if "_id" in doc:
+                        doc["_id"] = str(doc["_id"])
+                    doc.pop("embedding", None)
+                    doc.pop("embedding_text", None)
 
-    return results, tool_call_info
+            return results, tool_call_info
 
 
 def _run_mcp_query(
