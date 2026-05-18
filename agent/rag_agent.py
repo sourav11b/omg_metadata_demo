@@ -241,91 +241,92 @@ async def _run_mcp_query_async(
         }
     )
 
-    async with mcp_client:
-        tools = await mcp_client.get_tools()
+    # langchain-mcp-adapters 0.1.0+ removed context manager support.
+    # Call get_tools() directly — sessions are created on demand.
+    tools = await mcp_client.get_tools()
 
-        if not tools:
-            raise RuntimeError("MongoDB MCP Server returned no tools")
+    if not tools:
+        raise RuntimeError("MongoDB MCP Server returned no tools")
 
-        llm = get_llm()
-        llm_with_tools = llm.bind_tools(tools)
+    llm = get_llm()
+    llm_with_tools = llm.bind_tools(tools)
 
-        # Build system message with optional schema context
-        system_text = MCP_SYSTEM_PROMPT
-        if schema_context:
-            system_text += (
-                f"\n\nCOLLECTION SCHEMA (use for accurate field paths):\n"
-                f"{schema_context}"
-            )
+    # Build system message with optional schema context
+    system_text = MCP_SYSTEM_PROMPT
+    if schema_context:
+        system_text += (
+            f"\n\nCOLLECTION SCHEMA (use for accurate field paths):\n"
+            f"{schema_context}"
+        )
 
-        messages: list = [SystemMessage(content=system_text)]
-        # Conversation history for follow-up context
-        for turn in (chat_history or []):
-            role = turn.get("role", "user")
-            content = turn.get("content", "")
-            if role == "user":
-                messages.append(HumanMessage(content=content))
-            else:
-                messages.append(AIMessage(content=content))
-        messages.append(HumanMessage(content=query))
-
-        # First LLM call — generates tool calls
-        ai_response = await llm_with_tools.ainvoke(messages)
-        messages.append(ai_response)
-
-        tool_call_info: dict = {}
-        results: list[dict] = []
-
-        if ai_response.tool_calls:
-            # Execute each tool call via the MCP server
-            from langchain_core.messages import ToolMessage
-
-            for tc in ai_response.tool_calls:
-                tool_call_info = {
-                    "tool_name": tc["name"],
-                    "tool_args": tc["args"],
-                }
-                # Find the matching LangChain tool
-                matched_tool = next(
-                    (t for t in tools if t.name == tc["name"]), None
-                )
-                if matched_tool is None:
-                    raise RuntimeError(
-                        f"MCP tool '{tc['name']}' not found in server tools"
-                    )
-                # Invoke the tool (MCP server handles MongoDB I/O)
-                tool_result = await matched_tool.ainvoke(tc["args"])
-                messages.append(
-                    ToolMessage(content=str(tool_result), tool_call_id=tc["id"])
-                )
-                # Parse the tool result into structured docs
-                if isinstance(tool_result, str):
-                    try:
-                        parsed = json.loads(tool_result)
-                        if isinstance(parsed, list):
-                            results.extend(parsed)
-                        elif isinstance(parsed, dict):
-                            results.append(parsed)
-                    except (json.JSONDecodeError, TypeError):
-                        results.append({"raw_result": tool_result})
-                elif isinstance(tool_result, list):
-                    results.extend(tool_result)
-                elif isinstance(tool_result, dict):
-                    results.append(tool_result)
-                else:
-                    results.append({"raw_result": str(tool_result)})
+    messages: list = [SystemMessage(content=system_text)]
+    # Conversation history for follow-up context
+    for turn in (chat_history or []):
+        role = turn.get("role", "user")
+        content = turn.get("content", "")
+        if role == "user":
+            messages.append(HumanMessage(content=content))
         else:
-            # LLM chose not to call any tools — extract text answer
-            results.append({"answer": ai_response.content})
-            tool_call_info = {"tool_name": "none", "note": "LLM answered directly"}
+            messages.append(AIMessage(content=content))
+    messages.append(HumanMessage(content=query))
 
-        # Sanitise ObjectIds and remove embeddings
-        for doc in results:
-            if isinstance(doc, dict):
-                if "_id" in doc:
-                    doc["_id"] = str(doc["_id"])
-                doc.pop("embedding", None)
-                doc.pop("embedding_text", None)
+    # First LLM call — generates tool calls
+    ai_response = await llm_with_tools.ainvoke(messages)
+    messages.append(ai_response)
+
+    tool_call_info: dict = {}
+    results: list[dict] = []
+
+    if ai_response.tool_calls:
+        # Execute each tool call via the MCP server
+        from langchain_core.messages import ToolMessage
+
+        for tc in ai_response.tool_calls:
+            tool_call_info = {
+                "tool_name": tc["name"],
+                "tool_args": tc["args"],
+            }
+            # Find the matching LangChain tool
+            matched_tool = next(
+                (t for t in tools if t.name == tc["name"]), None
+            )
+            if matched_tool is None:
+                raise RuntimeError(
+                    f"MCP tool '{tc['name']}' not found in server tools"
+                )
+            # Invoke the tool (MCP server handles MongoDB I/O)
+            tool_result = await matched_tool.ainvoke(tc["args"])
+            messages.append(
+                ToolMessage(content=str(tool_result), tool_call_id=tc["id"])
+            )
+            # Parse the tool result into structured docs
+            if isinstance(tool_result, str):
+                try:
+                    parsed = json.loads(tool_result)
+                    if isinstance(parsed, list):
+                        results.extend(parsed)
+                    elif isinstance(parsed, dict):
+                        results.append(parsed)
+                except (json.JSONDecodeError, TypeError):
+                    results.append({"raw_result": tool_result})
+            elif isinstance(tool_result, list):
+                results.extend(tool_result)
+            elif isinstance(tool_result, dict):
+                results.append(tool_result)
+            else:
+                results.append({"raw_result": str(tool_result)})
+    else:
+        # LLM chose not to call any tools — extract text answer
+        results.append({"answer": ai_response.content})
+        tool_call_info = {"tool_name": "none", "note": "LLM answered directly"}
+
+    # Sanitise ObjectIds and remove embeddings
+    for doc in results:
+        if isinstance(doc, dict):
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            doc.pop("embedding", None)
+            doc.pop("embedding_text", None)
 
     return results, tool_call_info
 
