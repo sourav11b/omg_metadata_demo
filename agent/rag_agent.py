@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any, TypedDict
 
@@ -227,16 +228,26 @@ async def _run_mcp_query_async(
     all MongoDB I/O — no PyMongo calls needed here.
     """
     from langchain_mcp_adapters.client import MultiServerMCPClient
+    import shutil
+
+    # Build env that includes PATH/HOME so the subprocess can find node/npx.
+    # When ``env`` is passed to MultiServerMCPClient it **replaces** the
+    # process environment, so we must forward the essentials.
+    _mcp_env: dict[str, str] = {
+        "MDB_MCP_CONNECTION_STRING": MONGODB_URI,
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+    }
+    # Prefer the nvm-managed npx if available (Node 22+).
+    _npx_cmd = shutil.which("npx") or "npx"
 
     mcp_client = MultiServerMCPClient(
         {
             "mongodb": {
-                "command": "npx",
-                "args": ["-y", "mongodb-mcp-server", "--readOnly"],
+                "command": _npx_cmd,
+                "args": ["-y", "mongodb-mcp-server@latest", "--readOnly"],
                 "transport": "stdio",
-                "env": {
-                    "MDB_MCP_CONNECTION_STRING": MONGODB_URI,
-                },
+                "env": _mcp_env,
             }
         }
     )
